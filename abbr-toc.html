@@ -1,0 +1,22 @@
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+  document.querySelectorAll("nav#TOC a").forEach(function (link) {
+    const id = link.getAttribute("href").replace("#", "");
+    const heading = document.getElementById(id);
+    if (!heading) return;
+
+    const shortTitle = heading.getAttribute("data-toc-title");
+    if (!shortTitle) return;
+
+    const numberSpan = link.querySelector(".toc-section-number");
+    if (numberSpan) {
+      const number = numberSpan.textContent.trim();
+      link.innerHTML = "";
+      link.appendChild(numberSpan);
+      link.append(" " + shortTitle);
+    } else {
+      link.textContent = shortTitle;
+    }
+  });
+});
+</script>
