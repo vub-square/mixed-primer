@@ -1,0 +1,67 @@
+### Effect size for a fixed effect in a mixed model
+
+The effect size of a single fixed effect is typically a local effect size similar to Cohen's $f^2$, obtained through model comparison (full model vs. reduced model), while keeping the random-effects structure the same.
+
+For a predictor $b$, one common approximation is
+
+$$
+f_b^2 = \frac{R^2_{ab} - R^2_a}{1 - R^2_{ab}},
+$$
+
+with $R^2_{ab}$, proportion of variance explained by the full model,  
+and $R^2_a$, proportion explained by the reduced model without predictor $b$.
+
+This can be approximated using the residual variances:
+
+$$
+R^2 = \frac{V_{\text{null}} - V_{\text{model}}}{V_{\text{null}}}.
+$$
+
+Effect sizes for mixed models are still debated:
+
+- **Multiple variance components**, a single "total" variance is not uniquely defined, resulting in different $R^2$ definitions
+  - **Marginal $R^2$**: variance explained by fixed effects only, relative to total variance (fixed + all random + residual).
+  - **Conditional $R^2$**: variance explained by fixed + random effects together.
+
+- **Dependence on random-effects structure**, size depends on random-effects structure (e.g., adding random slopes, changing correlation structures), thus hard to compare.
+
+- **Partial pooling and shrinkage**, blurring the boundary between "fixed" and "random".
+
+- **Context-specific interpretation**, interpretation level specific.
+
+### Effect size for variance estimates (random effects and residual variance)
+
+The effect size for variance parameters is typically expressed as **proportions of variance** or **standardized differences**, rather than Cohen's $f^2$.
+
+- **Proportion of total variance attributable to a random effect**  
+
+  $$
+  \text{ICC} = \frac{\tau_0^2}{\tau_0^2 + \sigma^2}.
+  $$
+
+  For more complex models with multiple random components, analogous proportions can be computed, e.g.:
+
+  $$
+  \text{Prop}_{\text{intercept}} = \frac{\tau_0^2}{\tau_0^2 + \tau_{1}^2 + \sigma^2}, \quad
+  \text{Prop}_{\text{residual}} = \frac{\sigma^2}{\tau_0^2 + \tau_{1}^2 + \sigma^2},
+  $$
+
+  with $\tau_{1}^2$ a random-slope variance
+
+- **Change in variance components**  
+  Comparing models, **relative change** in a variance component:
+
+  $$
+  \text{RelChange}_{\tau} = \frac{\tau_{\text{null}}^2 - \tau_{\text{model}}^2}{\tau_{\text{null}}^2},
+  $$
+
+  interpreted as the proportion of that random-effect variance "explained" or reduced by the added predictor.
+
+- **Standardized variance differences**  
+  difference in standard deviations between two conditions or models, scaled by a reference standard deviation. For example, treatment changes random-intercept variance from $\tau_0^2$ to $\tau_1^2$:
+
+  $$
+  d_{\tau} = \frac{\sqrt{\tau_1^2} - \sqrt{\tau_0^2}}{\sigma_{\text{ref}}},
+  $$
+
+  where $\sigma_{\text{ref}}$ is a reference residual or total standard deviation.

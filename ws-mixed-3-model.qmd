@@ -1,0 +1,407 @@
+# Mixed Model
+
+Mixed models (a.k.a Multilevel Model)
+
+- extend regression models,
+- is modeling variance
+- turning it into a conditional mean
+- by estimating relations
+- by minimizing squared error.
+- **while accomodating dependencies**
+- **through estimating variances (heterogeneity)**
+
+## Random Intercept Model  {data-toc-title="Random Intercept"}
+
+Let $y_{ij}$ denote the outcome for individual $i$ in cluster $j$.
+
+::: {.equation-box}
+**Level 1** (case within cluster):
+$$
+y_{ij} = \underline{\beta_{0j}} + \beta_1 x_{ij} + \varepsilon_{ij}, \qquad \varepsilon_{ij} \sim \mathcal{N}(0,\ \sigma^2)
+$$
+
+**Level 2** (cluster-level model for the intercept):
+$$
+\underline{\beta_{0j}} = \gamma_{00} + u_{0j}, \qquad u_{0j} \sim \mathcal{N}(0,\ \tau_{00})
+$$
+
+**Combined (reduced form)**:
+$$
+y_{ij} = \underbrace{\gamma_{00} + \beta_1 x_{ij}}_{\text{fixed part}} + \underbrace{u_{0j} + \varepsilon_{ij}}_{\text{random part}}
+$$
+:::
+
+The random part implies a variance decomposed into random intercept variance and residual variance:
+
+$$
+\text{Var}(y_{ij}) = \tau_{00} + \sigma^2, \qquad \text{Cov}(y_{ij},\ y_{i'j}) = \tau_{00} \quad (i \neq i', \text{ same group } j)
+$$
+
+The relative proportion of heterogeity for this simple model is the intra class correlation (ICC):
+
+$\text{ICC} = \tau_{00} / (\tau_{00} + \sigma^2)$.
+
+## Why a Random Intercept Model  {data-toc-title="Advantage"}
+
+Mixed models treat cluster effects as **random draws from a distribution**.  
+
+Instead of estimating J-1 fixed effects + intercept
+
+$$
+\beta_{0}, \beta_{1}, ..., \beta_{J-1}
+$$
+
+random effects are estimated as
+
+$$
+\gamma_{00} + u_{0j} \qquad with \qquad u_{0j} \sim \mathcal{N}(0,\ \tau_{00})
+$$
+
+resulting in only 2 parameters to estimate: grand mean $\gamma_{00}$ and variance $\tau_{00}$
+
+Notice the similarity with the residuals:
+
+$$
+\varepsilon_i \overset{\text{i.i.d.}}{\sim} \mathcal{N}(0, \sigma^2).
+$$
+
+A single variance parameter captures cluster heterogeneity
+
+With a growing number of clusters
+
+- no increase in number of parameters to estimate
+- a better estimate of the variance parameter
+
+In this particular case:
+
+```{r}
+#| label: lmer_random_intercept
+lmer_int_9 <- lmer(score ~ age + (1 | group), data = dta_grouped)
+```
+
+```{r}
+#| label: fig-mixed_grouped_fitted
+cont9_stats <- dta_grouped |>
+  summarise(
+    mean_score = mean(score),
+    sd_score   = sd(score),
+    n          = n(),
+    se_mean    = sd(score) / sqrt(n()),
+    .groups    = "drop"
+  )
+
+pltdta_ri_9_high <- augment(lmer_int_9, data = dta_grouped) |> select(-resid) |> rename(fitted = .fitted, resid = .resid)
+
+pred_data <- expand_grid(
+  age = seq(min(dta_grouped$age), max(dta_grouped$age), length.out = 20),
+  group = factor(1:9)
+)
+
+pred_data$fitted <- predict(lmer_int_9, newdata = pred_data, re.form = NULL)
+pred_data$group_gray <- factor(pred_data$group, levels = unique(pred_data$group)[order(c(1,5,9,2,6,3,7,4,8))])
+
+```
+
+```{r}
+#| label: fig-mixed_age
+#| fig-cap: "Mixed Model"
+#| fig-height: 5.5
+#| fig-width: 5
+plt_mixed_similarity_high <- ggplot(pltdta_ri_9_high, aes(x = age, y = score)) +
+  geom_point(aes(color = factor(group)), size = 2.5, alpha = 0.85) +
+  scale_color_manual(values = group_grays_9, guide = "none") + 
+  geom_segment(
+    data = pltdta_ri_9_high,
+    aes(x = age, xend = age, y = score, yend = fitted),
+    color = "gray60",
+    alpha = 0.3,
+    linewidth = 0.8
+  ) +
+  geom_line(
+    data = pred_data,
+    aes(y = fitted, color = group_gray),
+    linewidth = 1.2,
+    show.legend = FALSE
+  ) +
+  annotate(
+    "text",
+    x = mean(pltdta_ri_9_high$age),
+    y = max(pltdta_ri_9_high$score) + 0.5,
+    label = paste0(
+      "score ≈ ",
+      round(fixef(lmer_int_9)[1], 2),
+      " + ",
+      round(fixef(lmer_int_9)[["age"]], 3),
+      " × age + random effect"
+    ),
+    size = 4.5
+  ) +
+  labs(
+    x = "Age (continuous predictor)",
+    y = "Score (outcome)",
+    title = "Mixed Model"
+  ) +
+  coord_cartesian(ylim = c(10, 20))
+```
+
+```{r}
+#| label: fig-fixed_age
+#| fig-cap: "Fixed Model"
+#| fig-height: 5.5
+#| fig-width: 5
+plt_fixed_similarity_high <- plt_similarity_high +
+  labs(
+    x = "Age (continuous predictor)",
+    y = "Score (outcome)",
+    title = "Fixed model"
+  )
+```
+
+```{r}
+#| label: fig-grouping-fixed-random
+#| fig-cap: "Random vs. Fixed: in this particular case almost identical"
+#| fig-height: 5.5
+#| fig-width: 12
+wrap_plots(plt_mixed_similarity_high, plt_fixed_similarity_high, nrow=1)
+```
+
+```{r}
+#| label: get_lm_lmer
+# maybe change later to tidy_gt and tidy_mixed_gt
+t_lm  <- tidy(lm_group_main_9)  |> select(term, estimate, std.error, statistic) |> mutate(across(c(estimate, std.error, statistic), ~ round(.x, 3)))
+m_lm <- glance(lm_group_main_9) |> select(sigma) |> mutate(sigma=round(sigma,3))
+t_lmer <- tidy(lmer_int_9)   |> select(term, estimate, std.error, df, statistic) |> mutate(across(c(estimate, std.error, statistic, df), ~ round(.x, 3)))
+```
+
+:::: {.columns}
+
+
+::: {.column width="50%"}
+
+Mixed  
+`in R:`  
+`lmer(score ~ age + (1 | group),`  
+`data = ..)`
+
+```{r}
+#| label: tab-gt_lmer
+gt(t_lmer)
+```
+
+Cluster specific estimates extracted:
+
+```{r}
+#| label: tab-gt_lmer_ranef
+gt(ranef(lmer_int_9)$group)
+```
+
+```{r}
+#| label: tab-icc_manual
+vc <- as.data.frame(VarCorr(lmer_int_9))
+tau00_hat  <- vc$vcov[vc$grp == "group"]
+sigma2_hat <- vc$vcov[vc$grp == "Residual"]
+icc_val    <- tau00_hat / (tau00_hat + sigma2_hat)
+icc_vals <- c('tau_00'=tau00_hat, 'sigma2'=sigma2_hat, 'ICC'=icc_val)
+icc_df <- data.frame(icc_vals) %>%
+  rownames_to_column("metric")
+gt(icc_df)
+```
+
+:::
+
+::: {.column width="5%"}
+
+:::
+
+::: {.column width="45%"}
+
+Fixed  
+`in R`  
+`lm(score ~ age + group,`  
+`data = ..)`
+
+```{r}
+#| label: tab-gt_lm
+gt(t_lm)
+```
+
+
+Fixed, residuals
+
+```{r}
+#| label: tab-gt_lm_anova
+gt(m_lm)
+```
+
+:::
+
+::::
+
+## Level specific slopes {data-toc-title="Level 2 Variables"}
+
+Different levels can have different predictors of the observations (at level 1).
+
+- example: test results explained by patient (level 1) hospital (level 2) variables
+  - e.g., older patients (age) result in higher scores
+  - e.g., university hospitals (type) result in higher scores
+
+Note: Variables can only explain variability at the lower or equal level.  
+
+Let $y_{ij}$ denote the outcome for individual $i$ in cluster $j$.
+
+::: {.equation-box}
+**Level 1** (case within cluster):
+$$
+y_{ij} = \beta_{0j} + \beta_{1} x_{ij} + \varepsilon_{ij}, \qquad \varepsilon_{ij} \sim \mathcal{N}(0,\ \sigma^2)
+$$
+
+**Level 2** (cluster-level model for the intercept, with a Level‑2 predictor $z_{j}$):
+$$
+\beta_{0j} = \gamma_{00} + \underline{\gamma_{01} z_{j}} + u_{0j}, \qquad u_{0j} \sim \mathcal{N}(0,\ \tau_{00})
+$$
+
+**Combined (reduced form)**:
+$$
+y_{ij} = \underbrace{\gamma_{00} + \beta_{1} x_{ij} + \gamma_{01} z_{j}}_{\text{fixed part}} + \underbrace{u_{0j} + \varepsilon_{ij}}_{\text{random part}}
+$$
+:::
+
+The same variable can sometimes be split up and defined at different levels.
+Let $y_{ij}$ denote the outcome for individual $i$ in cluster $j$.
+
+::: {.equation-box}
+**Level 1** (case within cluster):
+$$
+y_{ij} = \beta_{0j} + \underline{\beta_{1W} x_{ijW}} + \varepsilon_{ij}, \qquad \varepsilon_{ij} \sim \mathcal{N}(0,\ \sigma^2)
+$$
+
+where  
+$x_{ijW} = x_{ij} - \bar{x}_{j}$  (within-cluster centered $x$)  
+$\bar{x}_{j} = \frac{1}{n_j}\sum_{i=1}^{n_j} x_{ij}$  (cluster mean of $x$)
+
+**Level 2** (cluster-level model for the intercept, now including the cluster mean):
+$$
+\beta_{0j} = \gamma_{00} + \underline{\gamma_{01}\bar{x}_{j}} + u_{0j}, \qquad u_{0j} \sim \mathcal{N}(0,\ \tau_{00})
+$$
+
+**Combined (reduced form)**:
+$$
+y_{ij} = \underbrace{\gamma_{00} + \beta_{1W} x_{ijW} + \gamma_{01}\bar{x}_{j}}_{\text{fixed part}} + \underbrace{u_{0j} + \varepsilon_{ij}}_{\text{random part}}
+$$
+:::
+
+A fixed slope, maybe age, or weight, ... split in  
+
+- within cluster centered slope
+- cluster specific average
+
+One part focusses on within cluster relative position, other on cluster properties.
+
+Example: blood pressure explained by body weight 
+
+- patients with relatively higher weights in a hospital may have higher blood pressure
+- hospitals may differ in average weight because of ... 
+
+Without this split, it could be a blend.
+
+Note: ecological fallacy.
+
+```{r}
+dta_grouped_center <- dta_grouped |> group_by(group) |> mutate(agem=mean(age), agec=age-agem)
+```
+
+```{r}
+#| label: fig-within-between
+#| fig-cap: "Within and Between Group Differences"
+#| fig-height: 5.5
+#| fig-width: 12
+
+# Plot 1: Within-group part (Level 1) - agec (centered age)
+plt_center_within <- ggplot(data = dta_grouped_center, aes(x = agec, y = score)) +
+  geom_point(alpha = 0.3) +
+  geom_line(aes(group = group), alpha = 0.5) +
+  geom_smooth(aes(group = 1), method = "lm", se = FALSE, color = "blue", linewidth = 1) +  # pooled within-group slope
+  labs(title = "Within-group (Level 1)", 
+       x = "Age (centered within group)", 
+       y = "Score") +
+  theme_minimal()
+
+# Plot 2: Between-group part (Level 2) - group means
+dta_group_means <- dta_grouped_center |> 
+  group_by(group) |> 
+  summarise(score_mean = mean(score), 
+            agem = mean(age),
+            .groups = "drop") |> 
+  mutate(group = factor(group),
+         group_ordered = factor(group, levels = order(agem)))  # order by agem
+
+plt_center_between <- ggplot(data = dta_group_means, aes(x = group_ordered, y = score_mean)) +
+  geom_point(size = 3) +
+  geom_line(aes(group = 1), alpha = 0.5) +
+  geom_smooth(method = "lm", se = FALSE, color = "red", size = 1) +  # between-group slope
+  labs(title = "Between-group (Level 2)", 
+       x = "Group (ordered by mean age)", 
+       y = "Mean Score") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Combine plots
+plt_center_within + plt_center_between + plot_layout(nrow = 1)
+```
+
+```{r}
+#| label: lmer_random_intercept_centered
+lmer_int_global_9 <- lmer(score~age+(1|group),data=dta_grouped_center)
+lmer_int_center_9 <- lmer(score~agem+agec+(1|group),data=dta_grouped_center)
+```
+
+Repeating just fitting a slope.
+
+```{r}
+tidy_mixed_gt(lmer_int_global_9)
+glance_mixed_gt(lmer_int_global_9)
+```
+
+Splitting up over levels.
+
+
+```{r}
+tidy_mixed_gt(lmer_int_center_9)
+glance_mixed_gt(lmer_int_center_9)
+```
+
+For the data, a general slope can be fitted, and alternatively, a within and a between slope.
+
+```{r}
+#| eval: false
+lmer_int_slope_0_18 <- lmer(score~age+(1|group),data=dta_grouped_center)
+lmer_int_slope_C_18 <- lmer(score~agem+agec+(1|group),data=dta_grouped_center)
+```
+
+
+```{r}
+#| eval: false
+dta_grouped_x2 <- dta_grouped_center
+lmer_int_slope_0_18 <- lmer(score~age+(1|group),data=dta_grouped_x2)
+lmer_int_slope_C_18 <- lmer(score~age_ind+age_group+(1|group),data=dta_grouped_x2 |> group_by(group) |> mutate(age_group=mean(age)) |> mutate(age_ind=age-age_group))
+```
+
+```{r}
+#| eval: false
+tidy_mixed_gt(lmer_int_slope_0_18)
+glance_mixed_gt(lmer_int_slope_0_18)
+```
+
+
+```{r}
+#| eval: false
+tidy_mixed_gt(lmer_int_slope_C_18)
+glance_mixed_gt(lmer_int_slope_C_18)
+```
+
+Relative age matters within clusters,  
+Cluster average ages does not matter.
+
+```{r}
+save.image('zenzi.RData')
+```

@@ -1,0 +1,102 @@
+---
+title: Snippets
+author: W. Cools
+date: last-modified
+published-title: "Rendered"
+execute:
+  echo: TRUE
+  message: FALSE
+  warning: FALSE
+---
+
+Current quarto file contains a few notes on using the template and offers some snippets of R code for your convenience.
+
+Folder content:  
+_xtra folder: square logo and scss file for formatting html.  
+_quarto.yml file: project specific formatting for both html and pdf.  
+
+
+::: {.callout-important title='Requirements'}
+Running the QUARTO as is, requires installation of `tidyverse`, `gt` and `here`.
+:::
+
+## About R and QUARTO
+
+The knitr::purl() extracts R code from a quarto file, convenient for some fiddling.  
+That R code can be sourced within another R or QUARTO file.
+
+```{r}
+#| label: if_qmd_to_r
+#| eval: false
+prjct <- 'name_of_qmd_file_to_turn_into_r'
+knitr::purl(paste0(prjct,".qmd"), output = paste0(prjct,".r"))
+source(paste0(prjct,".r"))
+```
+
+QUARTO files can be run from terminal, but also from within R with system().
+
+```{r}
+#| eval: false
+prjct <- 'name_of_qmd_file_to_run_from_within_r'
+system(paste0('quarto render ',prjct,'.qmd'))
+```
+
+## Function Factory for dictionary
+
+A function factory is a list of functions that can be called conditionally. A use case is when a data dictionary includes in addition to the original variable names also new, more easy to work with, variable names and especially their variable type.
+
+The function `w_original_to_new` with arguments the data and the data dictionary is implemented. Note that ordered variables need to be specified further, manually.
+
+```{r}
+# assuming 'original' names, 'new' names and variable 'type'  (change if necessary)
+type_funs <- list(
+  character = as.character,
+  obsolete  = as.character,
+  numeric   = as.numeric,
+  integer   = as.integer,
+  factor    = as.factor,
+  logical   = as.logical,
+  date      = as.Date,
+  ordinal   = \(x) {
+    lvls <- unique(x)
+    lvls <- lvls[!is.na(lvls)]
+    factor(x, levels = lvls, ordered = TRUE)
+  }
+)
+
+w_original_to_new <- function(.data,.dict){
+	.data <- .data %>% rename(all_of(set_names(.dict$original, .dict$new)))
+	.data %>% mutate( across(all_of(.dict$new), ~ {
+             tp <- .dict$type[match(cur_column(), .dict$new)]
+             fn <- type_funs[[tp]]
+               fn(.x)
+           },
+           .names = "{.col}")
+  )
+}
+# w_original_to_new(<my data>,<my dictionary with names original-new-type>)
+
+w_ordinal_levels <- function(.data, .dict){
+	ordinal_dict <- .dict |> 
+		filter(type == "ordinal", !is.na(levels)) |>
+		mutate(levels_vec = map(levels, ~ unlist(str_split(.x, "<"))))
+
+	ordinal_vars <- ordinal_dict$new
+	.data |> mutate(across(all_of(ordinal_vars), 
+		~ ordered(.x, 
+	levels = ordinal_dict$levels_vec[[match(cur_column(), ordinal_vars)]])))
+}
+
+```
+
+```{r}
+#| eval: false
+# example with mtcars
+dict_mtcars <- tribble(~original,~new,~type,
+"mpg", "MPG", "numeric",
+"disp", "DSP", "numeric",
+"cyl", "CYL", "ordinal", 
+"hp", "HP", "factor"
+) 
+glimpse(w_original_to_new(mtcars,dict_mtcars))
+```

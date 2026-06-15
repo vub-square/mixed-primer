@@ -1,0 +1,26 @@
+# Final Remarks
+
+Mixed models
+
+- are regression models, extended with a model for dependencies
+- explicitly model two (or more) sources of variation:
+    - within-cluster variation
+    - between-cluster variation
+- use clusters (e.g., patients, hospitals, sites), linked through a common population of clusters
+- capture cluster-specificities through:
+  - random effects (cluster-specific deviations)
+  - induced correlation structures for repeated/linked measurements
+- allow borrowing strength across clusters via partial pooling 
+- provide flexible covariance structures for errors / random effects
+  - e.g., AR(1), heterogeneous AR(1), compound symmetry, heterogeneous CS, unstructured, Toeplitz
+- yield more accurate inference for:
+  - fixed effects (regression coefficients)
+  - predicted cluster-specific trajectories / means
+- handle unbalanced data and missing observations naturally
+- are appropriate for:
+  - repeated measures, longitudinal data
+  - hierarchical / nested data
+  - clustered survey data, multi-site studies
+
+welcome to discuss further @ SQUARE
+book an appointment through square.research.vub.be

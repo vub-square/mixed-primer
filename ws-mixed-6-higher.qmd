@@ -1,0 +1,198 @@
+# Additional Nesting
+
+## Nesting Within Nesting  {data-toc-title="Higher Levels"}
+
+Data can be nested at more than two levels: patients within wards within hospitals.
+
+Let $y_{ijk}$ = outcome for patient $i$, in ward $j$, in hospital $k$.
+
+::: {.equation-box}
+**Level 1** (patient within ward):
+$$
+y_{ijk} = \pi_{0jk} + \pi_1 x_{ijk} + e_{ijk}, \qquad e_{ijk} \sim \mathcal{N}(0,\ \sigma^2)
+$$
+
+**Level 2** (ward within hospital):
+$$
+\pi_{0jk} = \underline{\beta_{00k}} + r_{0jk}, \qquad r_{0jk} \sim \mathcal{N}(0,\ \tau_\pi^2)
+$$
+
+**Level 3** (hospital):
+$$
+\underline{\beta_{00k}} = \gamma_{000} + u_{00k}, \qquad u_{00k} \sim \mathcal{N}(0,\ \tau_\beta^2)
+$$
+
+**Combined:**
+$$
+y_{ijk} = \underbrace{\gamma_{000} + \pi_1 x_{ijk}}_{\text{fixed}} + \underbrace{u_{00k} + r_{0jk} + e_{ijk}}_{\text{three random terms}}
+$$
+:::
+
+Additional **variance components** are included to capture heterogeneity: 
+
+- $\tau_\beta^2$ (between hospitals)
+- $\tau_\pi^2$ (between wards within hospitals)
+- $\sigma^2$ (within wards).
+
+Note: different levels are assumed independent,  
+within a level covariance can exist,  
+between levels covariance is not possible.
+
+```{r}
+#| eval: false
+#| label: fig-three-level
+#| fig-cap: "Three-level structure. Each panel = one school; colours = classes within that school. Between-school differences are visible across panels; between-class differences appear within each panel."
+#| fig-height: 5
+
+set.seed(21)
+n_schools3 <- 4; n_classes <- 3; n_students3 <- 20
+
+school_u <- rnorm(n_schools3, 0, 8)
+class_r  <- rnorm(n_schools3 * n_classes, 0, 4)
+
+df_3lvl <- do.call(rbind, lapply(1:n_schools3, function(s) {
+  do.call(rbind, lapply(1:n_classes, function(cl) {
+    x <- runif(n_students3, 0, 10)
+    y <- 50 + school_u[s] + class_r[(s-1)*n_classes + cl] +
+         1.5 * x + rnorm(n_students3, 0, 3)
+    data.frame(x = x, y = y,
+               school = factor(s, labels = paste("School", s)),
+               class  = factor((s-1)*n_classes + cl))
+  }))
+}))
+
+ggplot(df_3lvl, aes(x, y, color = class)) +
+  geom_point(alpha = 0.5, size = 1.8) +
+  geom_smooth(method = "lm", se = FALSE, linewidth = 0.9, aes(group = class)) +
+  facet_wrap(~school, nrow = 1) +
+  scale_color_manual(values = rep(pal[c(1, 3, 5)], 4)) +
+  labs(title = "Three-Level Structure: Students within Classes within Schools",
+       subtitle = "Each panel = one school; colours = classes within that school",
+       x = "SES", y = "Test score", color = "Class") +
+  guides(color = "none")
+```
+
+```{r}
+#| label: fit-3level
+#| code-fold: false
+#| eval: false
+#| echo: true
+m_3lvl <- lmer(y ~ x + (1 | school / class), data = df_3lvl)
+```
+
+```{r}
+#| label: var-decomp
+#| code-fold: false
+#| eval: false
+vc3      <- as.data.frame(VarCorr(m_3lvl))
+vc3$pct  <- round(100 * vc3$vcov / sum(vc3$vcov), 1)
+vc3[, c("grp", "vcov", "pct")]
+```
+
+## Cross-classification  {data-toc-title="Crossed"}
+
+A level 1 unit can be associated with multiple higher level classifications *jointly*. Examples include:
+
+- Patients measured once, classified by both **hospital** and **neighborhood**
+- Ratings classified by both **rater** and **target**
+
+In such cases, the higher-level units are **crossed** rather than nested, with a separate random effect for each classification.
+
+Let $y_{ijk}$ denote the outcome for student $i$, in school $j$, and in neighborhood $k$.
+
+::: {.equation-box}
+**Level 1**
+$$
+y_{ijk} = \beta_0 + \beta_1 x_{ijk} + u_{0j} + v_{0k} + e_{ijk},
+\qquad e_{ijk} \sim \mathcal{N}(0,\ \sigma^2)
+$$
+
+**Level 2 random effects**
+$$
+u_{0j} \sim \mathcal{N}(0,\ \tau_{\text{school}}^2),
+\qquad
+v_{0k} \sim \mathcal{N}(0,\ \tau_{\text{neigh}}^2)
+$$
+
+**Combined**
+$$
+y_{ijk} = \beta_0 + \beta_1 x_{ijk} + u_{0j} + v_{0k} + e_{ijk}
+$$
+:::
+
+Additional **variance components** capture heterogeneity:
+
+- $\tau_{\text{school}}^2$ (between hospitals)
+- $\tau_{\text{neigh}}^2$ (between neighborhoods)
+- $\sigma^2$ (within school–neighborhood combinations)
+
+Here schools and neighborhoods are **independent classifications**, not nested. A patient belongs to one hospital and one neighborhood, but hospitals are not contained within neighborhoods, nor vice versa [1][2].
+
+```{r}
+#| label: fit-crossed
+#| eval: false
+#| echo: true
+m_cc <- lmer(y ~ x + (1 | school) + (1 | neighborhood), data = df_cc)
+```
+
+Extendable to **crossed random slopes** (e.g., school-specific effects of $x$)
+
+```{r}
+#| label: fit-crossed-slopes
+#| eval: false
+#| echo: true
+m_cc_slope <- lmer(y ~ x + (x | hospital) + (1 | neighborhood), data = df_cc)
+```
+
+```{r}
+#| eval: false
+#| label: fig-crossed
+#| fig-cap: "Cross-classified structure. Students are classified by school and neighborhood. Schools and neighborhoods are not nested; they are crossed."
+#| fig-height: 5
+
+set.seed(22)
+n_schools2 <- 4; n_neigh <- 3; n_students2 <- 15
+
+school_u  <- rnorm(n_schools2, 0, 8)
+neigh_v   <- rnorm(n_neigh, 0, 5)
+
+df_cc <- do.call(rbind, lapply(1:n_schools2, function(s) {
+  do.call(rbind, lapply(1:n_neigh, function(n) {
+    x <- runif(n_students2, 0, 10)
+    y <- 50 + school_u[s] + neigh_v[n] +
+         1.5 * x + rnorm(n_students2, 0, 3)
+    data.frame(x = x, y = y,
+               school = factor(s, labels = paste("School", s)),
+               neighborhood = factor(n, labels = paste("Neigh", n)))
+  }))
+}))
+
+ggplot(df_cc, aes(x, y, color = school)) +
+  geom_point(alpha = 0.5, size = 1.8) +
+  geom_smooth(method = "lm", se = FALSE, linewidth = 0.9, aes(group = school)) +
+  facet_wrap(~neighborhood, nrow = 1) +
+  scale_color_manual(values = rep(pal[c(1, 3, 5)], 4)) +
+  labs(title = "Cross-classified Structure: Students within Schools and Neighborhoods",
+       subtitle = "Panels = neighborhoods; colours = schools (crossed, not nested)",
+       x = "SES", y = "Test score", color = "School") +
+  guides(color = "none")
+```
+
+```{r}
+#| label: fit-cc
+#| eval: false
+#| echo: false
+m_cc <- lmer(y ~ x + (1 | school) + (1 | neighborhood), data = df_cc)
+```
+
+```{r}
+#| label: var-decomp-cc
+#| eval: false
+vc_cc <- as.data.frame(VarCorr(m_cc))
+vc_cc$pct <- round(100 * vc_cc$vcov / sum(vc_cc$vcov), 1)
+vc_cc[, c("grp", "vcov", "pct")]
+```
+
+```{r}
+save.image('zenzi.RData')
+```

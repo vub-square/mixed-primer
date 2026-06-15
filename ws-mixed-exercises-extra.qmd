@@ -1,0 +1,784 @@
+---
+title: "Workshop: Linear Mixed Models"
+subtitle: "Worked example with a longitudinal treatment study"
+date: today
+published-title: "Rendered"
+callout-appearance: simple
+callout-icon: false
+format:
+  html:
+    number-depth: 3
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+library(tidyverse)
+library(lme4)
+library(lmerTest)
+library(broom.mixed)
+library(gt)
+library(ggplot2)
+library(patchwork)
+
+# Utility: gt-wrapped tidy output
+tidy_gt <- function(model, ...) {
+  broom.mixed::tidy(model, ...) |>
+    mutate(across(where(is.numeric), \(x) round(x, 4))) |>
+    gt() |>
+    tab_options(table.font.size = 13)
+}
+
+glance_gt <- function(model) {
+  broom.mixed::glance(model) |>
+    mutate(across(where(is.numeric), \(x) round(x, 3))) |>
+    gt() |>
+    tab_options(table.font.size = 13)
+}
+
+col_patient  <- "#003399"
+col_pop      <- "#e31a1c"
+col_accent   <- "#ff6600"
+col_grey     <- "grey60"
+```
+
+## Mixed Models: exercises {.unnumbered}
+
+### Setup {data-toc-title="Example"}
+
+#### Data
+
+We use a **longitudinal treatment study** with repeated measurements on the same patients over time.
+
+The dataset contains:
+
+- repeated outcomes for each patient over visits
+- a **treatment group** indicator (Treatment `T` vs Control `C`)
+- a continuous baseline covariate: **age**
+- slightly **unbalanced follow-up**: each patient has between 3 and 5 visits
+- patient-specific heterogeneity in both baseline and rate of change
+
+This means the dataset is very close to a typical clinical repeated-measures setting, but still rich enough to motivate random slopes, model comparison, prediction, and diagnostics.
+
+```{r}
+#| label: load-data
+dta_long <- read_csv("longitudinal_treatment_study.csv", show_col_types = FALSE) |>
+  mutate(
+    patient_id = factor(patient_id),
+    treatment = factor(treatment, levels = c("C", "T")),
+    visit_f = factor(visit),
+    age_c = age - mean(age),
+    age_z = as.numeric(scale(age))
+  )
+
+glimpse(dta_long)
+```
+
+```{r}
+#| label: tab-first-rows
+dta_long |> slice(1:12) |> gt()
+```
+
+#### Aim and Method
+
+We want to understand how the score evolves over time and whether treatment matters, while accounting for the fact that repeated measurements on the same patient are correlated.
+
+We use **linear mixed models (LMMs)** to decompose variation into:
+
+- **fixed effects**: population-level mean trends over visit, treatment, and age
+- **random effects**: patient-specific deviations from the average trajectory
+- **residual variance**: remaining within-patient noise
+
+### Wide vs. Long Format: Exercise {data-toc-title="Data Reshaping"}
+
+Clinical datasets are often delivered in **wide format**, with one row per patient and a separate column for each visit. Mixed models, however, require **long format**, with one row per observation.
+
+```{r}
+#| label: wide-format
+dta_wide <- dta_long |>
+  select(patient_id, treatment, age, visit, score) |>
+  pivot_wider(
+    id_cols = c(patient_id, treatment, age),
+    names_from = visit,
+    values_from = score,
+    names_prefix = "visit_"
+  )
+
+dta_wide |> slice(1:8) |> gt()
+```
+
+Patients with fewer than 5 visits have `NA` values in later visit columns. In long format those rows simply do not exist, which is more natural for modelling unbalanced longitudinal data.
+
+```{r}
+#| label: long-format
+dta_long_from_wide <- dta_wide |>
+  pivot_longer(
+    cols = starts_with("visit_"),
+    names_to = "visit",
+    names_prefix = "visit_",
+    values_to = "score"
+  ) |>
+  filter(!is.na(score)) |>
+  mutate(visit = as.integer(visit)) |>
+  arrange(patient_id, visit)
+
+dta_long_from_wide |> slice(1:12) |> gt()
+```
+
+::: {.callout-warning title="Exercise"}
+Repeat the wide-to-long transformation yourself.
+
+- Why is long format more natural for mixed models?
+- How does long format handle imbalance more elegantly than wide format?
+:::
+
+### Exploring the Data: Exercise {data-toc-title="Exploration"}
+
+Before fitting models, inspect the data for anomalies, imbalance, and patterns that matter for modelling.
+
+#### Descriptive checks
+
+```{r}
+#| label: desc-counts
+dta_long |>
+  count(treatment)
+```
+
+```{r}
+#| label: desc-visits
+dta_long |>
+  count(patient_id, name = "n_visits") |>
+  count(n_visits)
+```
+
+```{r}
+#| label: desc-age
+dta_long |>
+  distinct(patient_id, treatment, age) |>
+  ggplot(aes(x = age, fill = treatment)) +
+  geom_histogram(bins = 12, alpha = 0.65, position = "identity") +
+  scale_fill_manual(values = c(C = col_patient, T = col_accent)) +
+  labs(x = "Age", y = "Count", title = "Age distribution by treatment") +
+  theme_bw(base_size = 13)
+```
+
+#### Trajectories
+
+A spaghetti plot shows individual longitudinal profiles and the mean trend per treatment group.
+
+```{r}
+#| label: fig-spaghetti
+#| fig-cap: "Individual trajectories by treatment group"
+#| fig-height: 5
+#| fig-width: 10
+dta_long |>
+  ggplot(aes(x = visit, y = score, group = patient_id, colour = treatment)) +
+  geom_line(alpha = 0.45, linewidth = 0.7) +
+  geom_point(alpha = 0.65, size = 1.5) +
+  stat_summary(
+    aes(group = treatment),
+    fun = mean, geom = "line",
+    linewidth = 1.8, linetype = "dashed"
+  ) +
+  scale_colour_manual(values = c(C = col_patient, T = col_accent)) +
+  facet_wrap(~ treatment, labeller = as_labeller(c(C = "Control", T = "Treatment"))) +
+  labs(
+    x = "Visit", y = "Score",
+    title = "Individual trajectories per patient",
+    subtitle = "Dashed line = treatment-specific mean trajectory"
+  ) +
+  theme_bw(base_size = 13) +
+  theme(legend.position = "none")
+```
+
+To reduce clutter, one can show only the most and least variable trajectories within each treatment group.
+
+```{r}
+#| label: fig-spaghetti-var
+#| fig-cap: "Most and least variable trajectories by treatment group"
+#| fig-height: 5
+#| fig-width: 6
+sel_patients <- dta_long |>
+  group_by(treatment, patient_id) |>
+  summarise(within_var = var(score, na.rm = TRUE), .groups = "drop") |>
+  group_by(treatment) |>
+  slice_min(within_var, n = 1, with_ties = FALSE) |>
+  bind_rows(
+    dta_long |>
+      group_by(treatment, patient_id) |>
+      summarise(within_var = var(score, na.rm = TRUE), .groups = "drop") |>
+      group_by(treatment) |>
+      slice_max(within_var, n = 1, with_ties = FALSE)
+  ) |>
+  distinct(treatment, patient_id)
+
+dta_long |>
+  semi_join(sel_patients, by = c("treatment", "patient_id")) |>
+  ggplot(aes(x = visit, y = score, group = patient_id, colour = treatment)) +
+  geom_line(alpha = 0.6, linewidth = 0.8) +
+  geom_point(alpha = 0.8, size = 1.6) +
+  scale_colour_manual(values = c(C = col_patient, T = col_accent)) +
+  labs(
+    x = "Visit", y = "Score",
+    title = "Most and least variable trajectories"
+  ) +
+  theme_bw(base_size = 13) +
+  theme(legend.position = "none")
+```
+
+#### Within- vs. Between-patient variation
+
+A key concept is the distinction between variation **between** patients and variation **within** patients over time.
+
+```{r}
+#| label: fig-within-between
+#| fig-cap: "Within vs. between-patient variation"
+#| fig-height: 5.5
+patient_means <- dta_long |>
+  group_by(patient_id, treatment) |>
+  summarise(mean_score = mean(score), .groups = "drop")
+
+p_between <- patient_means |>
+  ggplot(aes(x = reorder(patient_id, mean_score), y = mean_score, fill = treatment)) +
+  geom_col(width = 0.7, alpha = 0.85) +
+  scale_fill_manual(values = c(C = col_patient, T = col_accent)) +
+  labs(
+    x = "Patient (sorted by mean)", y = "Mean score",
+    title = "Between-patient variation",
+    subtitle = "Each bar is a patient's mean over visits"
+  ) +
+  theme_bw(base_size = 12) +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
+
+p_within <- dta_long |>
+  left_join(patient_means, by = c("patient_id", "treatment")) |>
+  mutate(within_dev = score - mean_score) |>
+  ggplot(aes(x = factor(visit), y = within_dev, fill = treatment)) +
+  geom_boxplot(alpha = 0.75) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = col_grey) +
+  scale_fill_manual(values = c(C = col_patient, T = col_accent)) +
+  labs(
+    x = "Visit", y = "Score - patient mean",
+    title = "Within-patient variation",
+    subtitle = "Deviation from each patient's own average"
+  ) +
+  theme_bw(base_size = 12)
+
+wrap_plots(p_between, p_within, nrow = 1)
+```
+
+::: {.callout-warning title="Exercise"}
+Explain which part of the variation could be captured by:
+
+- a random intercept
+- a random slope for visit
+- the residual variance
+:::
+
+### Estimating Mixed Models {data-toc-title="Estimation"}
+
+#### Model recap
+
+We begin with a random-intercept model:
+
+$$
+\text{score}_{ij} = \beta_0 + \beta_1\,\text{visit}_{ij} + \beta_2\,\text{treatment}_i + \beta_3\,\text{age}_{ci} + u_{0i} + \varepsilon_{ij}
+$$
+
+where:
+
+$$
+u_{0i} \sim \mathcal{N}(0, \sigma^2_{u_0}), \qquad
+\varepsilon_{ij} \sim \mathcal{N}(0, \sigma^2), \qquad
+u_{0i} \perp \varepsilon_{ij}.
+$$
+
+The random intercept captures a patient's baseline deviation from the population mean.
+
+#### Fitting models
+
+##### Model 0 — Intercept only
+
+```{r}
+#| label: mod0
+mod0 <- lmer(score ~ 1 + (1 | patient_id), data = dta_long, REML = TRUE)
+summary(mod0)
+```
+
+##### Model 1a — Add continuous time
+
+```{r}
+#| label: mod1
+mod1 <- lmer(score ~ visit + (1 | patient_id), data = dta_long, REML = FALSE)
+tidy_gt(mod1, effects = "fixed")
+```
+
+##### Model 1b — Add categorical time
+
+```{r}
+#| label: mod1b
+mod1b <- lmer(score ~ visit_f + (1 | patient_id), data = dta_long, REML = FALSE)
+tidy_gt(mod1b, effects = "fixed")
+```
+
+##### Model 2 — Add treatment
+
+```{r}
+#| label: mod2
+mod2 <- lmer(score ~ visit + treatment + (1 | patient_id), data = dta_long, REML = FALSE)
+tidy_gt(mod2, effects = "fixed")
+```
+
+##### Model 3 — Add centered age
+
+```{r}
+#| label: mod3
+mod3 <- lmer(score ~ visit + treatment + age_c + (1 | patient_id), data = dta_long, REML = FALSE)
+tidy_gt(mod3, effects = "fixed")
+```
+
+Centering changes the interpretation of the intercept: it is now the expected score at `visit = 0` for the reference treatment group at the mean age.
+
+##### Model 3b — Add treatment-by-visit interaction
+
+```{r}
+#| label: mod3b
+mod3b <- lmer(score ~ visit * treatment + age_c + (1 | patient_id), data = dta_long, REML = FALSE)
+tidy_gt(mod3b, effects = "fixed")
+```
+
+This interaction allows the treatment groups to evolve differently over time.
+
+##### Model 4 — Add random slope for time
+
+```{r}
+#| label: mod4
+mod4 <- lmer(score ~ visit + treatment + age_c + (1 + visit | patient_id),
+             data = dta_long, REML = FALSE)
+tidy_gt(mod4, effects = "fixed")
+```
+
+##### Model 5 — Add interaction and random slope
+
+```{r}
+#| label: mod5
+mod5 <- lmer(score ~ visit * treatment + age_c + (1 + visit | patient_id),
+             data = dta_long, REML = FALSE)
+tidy_gt(mod5, effects = "fixed")
+```
+
+::: {.callout-warning title="Exercise"}
+Interpret:
+
+- the coefficient for `visit`
+- the coefficient for `treatmentT`
+- the coefficient for `age_c`
+- the interaction `visit:treatmentT`
+:::
+
+### Model Comparison {data-toc-title="Model Comparison"}
+
+Use likelihood ratio tests for nested model comparisons. Compare fixed effects under **ML**.
+
+#### Evaluation of fixed effects
+
+```{r}
+#| label: anova-fixed
+anova(mod1, mod2, mod3, mod3b)
+```
+
+This lets you assess whether treatment, age, and the treatment-by-visit interaction improve model fit.
+
+#### Evaluation of random effects
+
+```{r}
+#| label: anova-random
+anova(mod3, mod4)
+```
+
+```{r}
+#| label: anova-random-interaction
+anova(mod3b, mod5)
+```
+
+Testing a variance component against 0 places the null on the boundary of the parameter space, so the naive LRT p-value is approximate.
+
+For teaching purposes, it is still useful, but one should note that a mixture distribution or a parametric bootstrap is preferable in more formal settings.
+
+#### AIC / BIC summary table
+
+```{r}
+#| label: model-comparison-table
+model_list <- list(
+  "M0: intercept only" = mod0,
+  "M1: + visit" = mod1,
+  "M1b: visit categorical" = mod1b,
+  "M2: + treatment" = mod2,
+  "M3: + age" = mod3,
+  "M3b: + visit:treatment" = mod3b,
+  "M4: + random slope" = mod4,
+  "M5: + interaction + random slope" = mod5
+)
+
+map_dfr(model_list, broom.mixed::glance, .id = "model") |>
+  select(model, AIC, BIC, logLik, df.residual) |>
+  mutate(across(where(is.numeric), \(x) round(x, 1))) |>
+  gt() |>
+  tab_style(
+    style = cell_fill(color = "#d4edda"),
+    locations = cells_body(rows = AIC == min(AIC))
+  )
+```
+
+::: {.callout-warning title="Exercise"}
+Do the AIC/BIC conclusions support the LRT-based conclusions?
+
+Would you retain the interaction term? Would you retain the random slope?
+:::
+
+### Fixed and Random Effect Estimates {data-toc-title="Estimates"}
+
+Suppose we select `mod4` as the final working model: linear visit effect, treatment, centered age, and a random slope for visit.
+
+We now re-fit it using **REML** for variance estimation.
+
+```{r}
+#| label: final-model
+mod_final <- lmer(score ~ visit + treatment + age_c + (1 + visit | patient_id),
+                  data = dta_long, REML = TRUE)
+summary(mod_final)
+```
+
+#### Fixed effects
+
+```{r}
+#| label: tab-fixed-effects
+tidy_gt(mod_final, effects = "fixed", conf.int = TRUE)
+```
+
+#### Variance components
+
+```{r}
+#| label: tab-random-effects
+tidy_gt(mod_final, effects = "ran_pars")
+```
+
+#### Intraclass Correlation Coefficient (ICC)
+
+For a random-intercept model, the ICC is:
+
+$$
+ICC = \frac{\sigma^2_{u_0}}{\sigma^2_{u_0} + \sigma^2}
+$$
+
+Here, because the final model contains a random slope as well, the simple ICC is mainly a rough descriptive summary rather than a complete description of the covariance structure.
+
+```{r}
+#| label: icc
+mod_icc <- lmer(score ~ visit + treatment + age_c + (1 | patient_id),
+                data = dta_long, REML = TRUE)
+
+vc <- as.data.frame(VarCorr(mod_icc))
+sigma2_u0  <- vc$vcov[vc$grp == "patient_id"]
+sigma2_eps <- vc$vcov[vc$grp == "Residual"]
+icc <- sigma2_u0 / (sigma2_u0 + sigma2_eps)
+
+tibble(
+  sigma2_u0 = round(sigma2_u0, 3),
+  sigma2_eps = round(sigma2_eps, 3),
+  ICC = round(icc, 3)
+) |>
+  gt()
+```
+
+::: {.callout-warning title="Exercise"}
+Why is the ICC easiest to interpret in a random-intercept model?
+
+How does that interpretation become more subtle once random slopes are added?
+:::
+
+### Prediction
+
+Predictions can be made for:
+
+- patients already observed in the data
+- a population-average trajectory
+- a new patient not observed before
+
+#### Population-Level Predictions {data-toc-title="Population Predictions"}
+
+Population-level predictions use only the fixed effects.
+
+```{r}
+#| label: fig-population-predictions
+#| fig-cap: "Population-level predicted trajectories by treatment"
+#| fig-height: 4.5
+new_pop <- expand_grid(
+  visit = 1:5,
+  treatment = c("C", "T"),
+  age_c = 0,
+  patient_id = NA
+) |>
+  mutate(
+    treatment = factor(treatment, levels = c("C", "T")),
+    pred_pop = predict(mod_final, newdata = cur_data(), re.form = NA, allow.new.levels = TRUE)
+  )
+
+ggplot(new_pop, aes(x = visit, y = pred_pop, colour = treatment, group = treatment)) +
+  geom_line(linewidth = 1.6) +
+  geom_point(size = 3) +
+  scale_colour_manual(values = c(C = col_patient, T = col_accent)) +
+  labs(
+    x = "Visit", y = "Predicted score",
+    title = "Population-level predicted trajectories",
+    subtitle = "At mean age; random effects set to zero"
+  ) +
+  theme_bw(base_size = 13)
+```
+
+#### Subject-Specific Predictions {data-toc-title="Subject Predictions"}
+
+Subject-specific predictions condition on the estimated random effects.
+
+```{r}
+#| label: fig-subject-predictions
+#| fig-cap: "Subject-specific predicted vs observed trajectories"
+#| fig-height: 6
+dta_pred <- dta_long |>
+  mutate(
+    pred_pop = predict(mod_final, re.form = NA),
+    pred_subj = predict(mod_final)
+  )
+
+dta_pred |>
+  filter(patient_id %in% levels(patient_id)[1:12]) |>
+  ggplot(aes(x = visit)) +
+  geom_point(aes(y = score), colour = "grey40", size = 2) +
+  geom_line(aes(y = pred_subj, colour = treatment), linewidth = 1.1) +
+  geom_line(aes(y = pred_pop, colour = treatment), linewidth = 0.7,
+            linetype = "dashed", alpha = 0.7) +
+  scale_colour_manual(values = c(C = col_patient, T = col_accent)) +
+  facet_wrap(~ patient_id, ncol = 4) +
+  labs(
+    x = "Visit", y = "Score",
+    title = "Subject-specific (solid) vs population (dashed) predictions",
+    subtitle = "Observed scores shown as points"
+  ) +
+  theme_bw(base_size = 11) +
+  theme(legend.position = "top")
+```
+
+#### Predicting a New Patient {data-toc-title="New Patient"}
+
+For a new patient, there is no estimated patient-specific random effect. The point prediction is therefore population-level.
+
+```{r}
+#| label: new-patient-prediction
+new_patient <- tibble(
+  visit = 1:5,
+  treatment = factor("T", levels = c("C", "T")),
+  age_c = 40 - mean(dta_long$age),
+  patient_id = NA
+) |>
+  mutate(
+    pred = predict(mod_final, newdata = cur_data(), re.form = NA,
+                   allow.new.levels = TRUE)
+  )
+
+new_patient |>
+  mutate(pred = round(pred, 2)) |>
+  gt() |>
+  tab_header(
+    title = "Predicted scores for a new 40-year-old treatment patient",
+    subtitle = "Population-level prediction: random effects set to zero"
+  )
+```
+
+::: {.callout-warning title="Exercise"}
+Explain why the point prediction for a new patient equals the population-level prediction.
+
+Why is the uncertainty for a new patient still larger than uncertainty for the population mean?
+:::
+
+### Diagnostics
+
+Good diagnostics evaluate whether the model is a reasonable approximation to the data.
+
+```{r}
+#| label: diagnostic-setup
+res_df <- dta_long |>
+  mutate(
+    fitted_val = fitted(mod_final),
+    resid_val = resid(mod_final),
+    std_resid = resid_val / sigma(mod_final)
+  )
+
+blups <- ranef(mod_final)$patient_id |>
+  rownames_to_column("patient_id") |>
+  rename(u0_hat = `(Intercept)`, u1_hat = visit)
+```
+
+#### Residuals vs. Fitted
+
+```{r}
+#| label: fig-resid-fitted
+#| fig-cap: "Residuals vs fitted values"
+#| fig-height: 4
+res_df |>
+  ggplot(aes(x = fitted_val, y = resid_val)) +
+  geom_point(alpha = 0.6, colour = col_patient) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = col_grey) +
+  geom_smooth(se = FALSE, colour = col_pop, linewidth = 1) +
+  labs(x = "Fitted values", y = "Residuals", title = "Residuals vs Fitted") +
+  theme_bw(base_size = 13)
+```
+
+#### Q-Q plot of residuals
+
+```{r}
+#| label: fig-qq-resid
+#| fig-cap: "Q-Q plot of standardised residuals"
+#| fig-height: 4
+res_df |>
+  ggplot(aes(sample = std_resid)) +
+  stat_qq(alpha = 0.6, colour = col_patient) +
+  stat_qq_line(colour = col_pop, linewidth = 1) +
+  labs(
+    title = "Normal Q-Q: Standardised Residuals",
+    x = "Theoretical Quantiles", y = "Sample Quantiles"
+  ) +
+  theme_bw(base_size = 13)
+```
+
+#### Q-Q plot of random effects
+
+```{r}
+#| label: fig-qq-blups
+#| fig-cap: "Q-Q plots of estimated random effects"
+#| fig-height: 4
+p_u0 <- blups |>
+  ggplot(aes(sample = u0_hat)) +
+  stat_qq(alpha = 0.7, colour = col_accent) +
+  stat_qq_line(colour = col_pop, linewidth = 1) +
+  labs(title = "Random intercepts", x = "Theoretical Quantiles", y = "Sample Quantiles") +
+  theme_bw(base_size = 12)
+
+p_u1 <- blups |>
+  ggplot(aes(sample = u1_hat)) +
+  stat_qq(alpha = 0.7, colour = col_patient) +
+  stat_qq_line(colour = col_pop, linewidth = 1) +
+  labs(title = "Random slopes", x = "Theoretical Quantiles", y = "Sample Quantiles") +
+  theme_bw(base_size = 12)
+
+p_u0 + p_u1
+```
+
+#### Scale-Location plot
+
+```{r}
+#| label: fig-scale-location
+#| fig-cap: "Scale-location plot"
+#| fig-height: 4
+res_df |>
+  mutate(sqrt_abs_resid = sqrt(abs(std_resid))) |>
+  ggplot(aes(x = fitted_val, y = sqrt_abs_resid)) +
+  geom_point(alpha = 0.6, colour = col_patient) +
+  geom_smooth(se = FALSE, colour = col_pop, linewidth = 1) +
+  labs(
+    x = "Fitted values",
+    y = expression(sqrt("|Standardised residuals|")),
+    title = "Scale-Location"
+  ) +
+  theme_bw(base_size = 13)
+```
+
+#### Caterpillar plot of random intercepts
+
+```{r}
+#| label: fig-caterpillar-int
+#| fig-cap: "Caterpillar plot of random intercepts"
+#| fig-height: 5.5
+re_condvar <- ranef(mod_final, condVar = TRUE)$patient_id
+postvar <- attr(re_condvar, "postVar")
+
+blup_int <- tibble(
+  patient_id = rownames(re_condvar),
+  u0_hat = re_condvar[, "(Intercept)"],
+  se = sqrt(postvar[1, 1, ])
+) |>
+  mutate(
+    lower = u0_hat - 1.96 * se,
+    upper = u0_hat + 1.96 * se
+  ) |>
+  arrange(u0_hat) |>
+  mutate(patient_id = factor(patient_id, levels = patient_id))
+
+blup_int |>
+  ggplot(aes(x = patient_id, y = u0_hat)) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = col_grey) +
+  geom_errorbar(aes(ymin = lower, ymax = upper), width = 0.3, colour = col_grey) +
+  geom_point(size = 2.4, colour = col_patient) +
+  labs(
+    x = "Patient ID (sorted)", y = expression(hat(u)[i]),
+    title = "Caterpillar plot: estimated random intercepts"
+  ) +
+  theme_bw(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 7))
+```
+
+#### Caterpillar plot of random slopes
+
+```{r}
+#| label: fig-caterpillar-slope
+#| fig-cap: "Caterpillar plot of random slopes"
+#| fig-height: 5.5
+blup_slope <- tibble(
+  patient_id = rownames(re_condvar),
+  u1_hat = re_condvar[, "visit"],
+  se = sqrt(postvar[2, 2, ])
+) |>
+  mutate(
+    lower = u1_hat - 1.96 * se,
+    upper = u1_hat + 1.96 * se
+  ) |>
+  arrange(u1_hat) |>
+  mutate(patient_id = factor(patient_id, levels = patient_id))
+
+blup_slope |>
+  ggplot(aes(x = patient_id, y = u1_hat)) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = col_grey) +
+  geom_errorbar(aes(ymin = lower, ymax = upper), width = 0.3, colour = col_grey) +
+  geom_point(size = 2.4, colour = col_accent) +
+  labs(
+    x = "Patient ID (sorted)", y = expression(hat(u)[i]),
+    title = "Caterpillar plot: estimated random slopes"
+  ) +
+  theme_bw(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 7))
+```
+
+::: {.callout-warning title="Exercise"}
+Review the diagnostics and discuss:
+
+- evidence for non-linearity
+- evidence for heteroscedasticity
+- departures from normality
+- whether some patients appear unusually influential
+:::
+
+### Possible extensions
+
+This dataset also allows several additional exercises:
+
+- compare linear versus categorical visit effects
+- evaluate a treatment-by-visit interaction
+- compare centered age versus standardized age
+- discuss the ICC in random-intercept versus random-slope models
+- compare subject-specific and population-level predictions
+- discuss prediction for unseen patients
+- inspect whether a simpler random-intercept model would be adequate
+
+These extensions make it a good bridge between a toy simulated example and more realistic applied longitudinal data.

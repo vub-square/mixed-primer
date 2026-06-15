@@ -1,0 +1,134 @@
+## Borrowing Strength: Partial Pooling  {data-toc-title="Partial Pooling"}
+
+Strategies for estimating each clusters' intercept:
+
+1. **No pooling**: independent clusters, ignores information from other clusters
+2. **Complete pooling**: grand mean, ignores group membership
+3. **Partial pooling**: reconciles both, compromise
+
+**Partial pooling**, the key mixed model characteristic
+
+- cluster specific estimates
+- more global estimates
+
+Possible becasue clusters sampled from an underlying population
+
+- other clusters are informative
+- use dependency through common population of clusters
+
+Partial pooling implies shrinkage:  
+shrink each group estimate toward the grand mean  
+results in random effects $\hat{u}_{0j}$ or **Best Linear Unbiased Predictor (BLUP)**:
+
+$$
+\hat{u}_{0j} = \underbrace{\frac{n_j/\sigma^2}{n_j/\sigma^2 + 1/\tau_{00}}}_{\text{reliability weight}\ \lambda_j} \cdot \left(\bar{y}_{\cdot j} - \hat{\gamma}_{00}\right)
+$$
+
+The weight defines the percentage with which cluster specific deviation from the global average shrink
+
+- $\lambda_j \to 1$ with increasing cluster sizes and stronger within cluster correlations (trust the raw data)
+- $\lambda_j \to 0$ witch decreasing cluster sizes and weaker within cluster correlations (shrink toward the overall mean).
+
+```{r}
+#| label: fig-partial-pooling-try
+#| fig-cap: "Partial pooling. blue = no-pooling, green = LMM BLUPs"
+#| fig-height: 5
+#| fig-width: 10
+
+
+set.seed(123)
+# combined 7, 8, 9, to get 16 at the bottom
+# split 6 in sizes 4, 4, and 8
+# randomly assign in 1, 2, 3 and 4
+
+
+dta_grouped_arrange_9 <- dta_grouped
+dtb1 <- dta_grouped_arrange_9 |> filter(group %in% c(1:4)) |> mutate(group1=sample(group))
+dtb2 <- dta_grouped_arrange_9 |> filter(group %in% c(5)) |> mutate(group1=factor(sample(c(rep(5,4),rep(6,4),rep(8,8)))))
+dtb3 <- dta_grouped_arrange_9 |> filter(group %in% c(7)) |> mutate(group1=factor(7))
+dtb4 <- dta_grouped_arrange_9 |> filter(group %in% c(7,8,9)) |> mutate(group1=factor(9))
+dta_grouped_arrange_9 <- bind_rows(dtb1,dtb2,dtb3,dtb4)
+
+
+lmer_int_9x <- lmer(score ~ age + (1 | group1), data = dta_grouped_arrange_9)
+grand_mu <- fixef(lmer_int_9x)[["(Intercept)"]]
+
+raw_means <- do.call(rbind, lapply(split(dta_grouped_arrange_9 |> group_by(group1) |> mutate(n_obs=n()), dta_grouped_arrange_9$group1), function(d) {
+  data.frame(
+    group = as.character(d$group1[1]),
+    n_obs = d$n_obs[1],
+    raw_mean = mean(d$score) - fixef(lmer_int_9x)[[2]] * mean(d$age)
+  )
+}))
+
+re_vals <- ranef(lmer_int_9x)$group
+re_df   <- data.frame(group = rownames(re_vals), u0 = re_vals[, 1])
+re_df$blup <- grand_mu + re_df$u0
+
+pp_data <- merge(raw_means, re_df, by = "group")
+pp_data$gord <- factor(pp_data$group, levels = as.character(1:nrow(pp_data)))
+
+ggplot(pp_data, aes(x = gord)) +
+  geom_hline(yintercept = grand_mu, linetype = "dashed",
+             color = "grey50", linewidth = 1) +
+  geom_segment(aes(xend = gord, y = raw_mean, yend = blup),
+               arrow = arrow(length = unit(0.18, "cm"), type = "closed"),
+               color = "#e05c2a", linewidth = 0.7) +
+  geom_point(aes(y = raw_mean, size = n_obs), color = "#2c6fad", alpha = 0.85) +
+  geom_point(aes(y = blup), shape = 18, size = 3.5, color = "#3aab6d") +
+  scale_size_continuous(range = c(2, 8), breaks = c(3, 8, 15, 30, 50)) +
+  annotate("text", x = 12, y = grand_mu + 1.5,
+           label = "Grand mean", size = 3, color = "grey50", hjust = 1) +
+  labs(title = "Partial Pooling: Shrinkage toward the Grand Mean",
+       subtitle = "Blue = no-pooling estimate  |  Green = LMM BLUP  |  Arrow = shrinkage",
+       x = "Group", y = "Estimated intercept", size = "Group n") +
+  theme(legend.position = "right")
+```
+
+Note: modeling the correlation to shrink estimates allows for cluster specific effects not explicitely represented
+
+Example: matching is not a reason to turn to mixed models,  
+matching uses explicitly available information that should included in the model as such
+
+## Within-Cluster Correlation and Effective Sample Size {data-toc-title="Sample Size"}
+
+Consider two types of predictors:
+
+1. **Between-cluster predictor** $Z_j$ (e.g. hospital type)
+   - Only varies between clusters, constant within a cluster.
+2. **Within-cluster predictor** $x_{ij}$ (e.g. treatment dose)
+   - Varies within clusters.
+
+For a balanced design with $J$ clusters and $m$ observations per cluster:
+
+- Variance of the estimator for the **between-cluster** effect is approximately proportional to
+
+$$
+\text{Var}(\hat{\gamma}_{01}) \propto \frac{\tau_{00} + \sigma^2/m}{J}.
+$$
+
+- Variance of the estimator for the **within-cluster** effect is approximately proportional to
+
+$$
+\text{Var}(\hat{\gamma}_{10}) \propto \frac{\sigma^2}{J \cdot m}.
+$$
+
+As $\rho$ increases (i.e. $\tau_{00}$ grows relative to $\sigma^2$):
+
+- $\tau_{00} + \sigma^2/m$ becomes larger $\Rightarrow$ **between-cluster** effects become harder to detect.
+- $\sigma^2$ becomes smaller relative to the total variance $\Rightarrow$ **within-cluster** effects become easier to detect.
+
+**Stronger within-cluster correlation** makes 
+
+- **between-cluster differences** harder to detect.
+- **within-cluster differences** easier to detect.
+
+Note: cluster randomization focuses on between cluster effects, dependent more on the number of clusters, less on the number of observations.
+
+To compare treatments,  
+**randomizing within each cluster is usually far more efficient**
+
+```{r}
+save.image('zenzi.RData')
+```
+

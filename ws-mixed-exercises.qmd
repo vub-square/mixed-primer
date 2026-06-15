@@ -1,0 +1,1018 @@
+---
+title: "Workshop: Linear Mixed Models"
+subtitle: "Getting our hands dirty"
+date: today
+published-title: "Rendered"
+callout-appearance: simple
+callout-icon: false
+format:
+  html:
+    number-depth: 3
+---
+
+```{r}
+#| label: setup
+#| echo: false
+
+library(tidyverse)
+library(lme4)
+library(lmerTest)
+library(broom.mixed)
+library(gt)
+library(ggplot2)
+library(patchwork)
+library(writexl)
+
+# Utility: gt-wrapped tidy output
+tidy_gt <- function(model, ...) {
+  broom.mixed::tidy(model, ...) |>
+    mutate(across(where(is.numeric), \(x) round(x, 4))) |>
+    gt() |>
+    tab_options(table.font.size = 13)
+}
+
+glance_gt <- function(model) {
+  broom.mixed::glance(model) |>
+    mutate(across(where(is.numeric), \(x) round(x, 3))) |>
+    gt() |>
+    tab_options(table.font.size = 13)
+}
+
+# Colour palette
+col_patient  <- "#003399"
+col_pop      <- "#e31a1c"
+col_accent   <- "#ff6600"
+col_grey     <- "grey60"
+```
+
+## Mixed Models: exercises {.unnumbered}
+
+### Setup {data-toc-title="Example"}
+
+#### Data
+
+Suppose a **SQUARE** test exists:
+
+- performed *repeatedly* on the same patients over time
+- each patient has between 3 and 5 visits (slightly unbalanced)
+- patients differ by **treatment group** (Treatment T vs Control C) and **baseline age**
+- the test returns a score between 0 and 30
+
+The data for this working example is simulated to have 30 patients, 3–5 visits each.
+
+```{r}
+#| label: simulate-data
+#| echo: false
+
+set.seed(42)
+
+n_patients <- 30
+max_visits  <- 5
+
+# Fixed-effect parameters
+beta_0        <- 15    # grand intercept
+beta_time     <- 1.2   # score improves ~1.2 pts per visit
+beta_trt      <- 2.5   # treatment B adds 2.5 pts
+beta_age      <- -0.15 # older patients score slightly lower
+sigma_u0      <- 3.2   # SD of patient-specific intercept
+sigma_residual <- 2.0  # residual SD
+
+patient_info <- tibble(
+  patient_id  = 1:n_patients,
+  treatment   = rep(c("T", "C"), each = n_patients / 2),
+  age         = round(runif(n_patients, 25, 65)),
+  n_visits    = sample(3:5, n_patients, replace = TRUE),
+  u0          = rnorm(n_patients, 0, sigma_u0)   # random intercept
+)
+
+# Build long-form data
+dta_long <- patient_info |>
+  rowwise() |>
+  reframe(
+patient_id = patient_id,
+    treatment  = treatment,
+    age        = age,
+    u0         = u0,
+    visit      = 1:n_visits
+  ) |>
+    mutate(
+  trt_B   = as.integer(treatment == "B"),
+    mu      = beta_0 + beta_time * visit + beta_trt * trt_B +
+      beta_age * (age - mean(patient_info$age)) + u0,
+    score   = round(mu + rnorm(n(), 0, sigma_residual), 1),
+    score   = pmax(0, pmin(30, score))           # clamp to [0, 30]
+  ) |>
+    select(patient_id, treatment, age, visit, score)
+  
+  glimpse(dta_long)
+```
+
+#### Aim and Method
+
+We want to understand how the score evolves over time and whether treatment matters — while **properly accounting for the fact that repeated measurements on the same patient are correlated**.
+
+We use a **Linear Mixed Models (LMM)**, which decompose variance into:
+
+- **Fixed effects** — population-level trends (time, treatment, age)
+- **Random effects** — patient-specific deviations from those trends
+- **Residual variance** — unexplained within-patient noise
+
+### Wide vs. Long Format: Exercise {data-toc-title="Data Reshaping"}
+
+Clinical datasets are often delivered in **wide format** — one row per patient, separate columns for each visit. This is used for multivariate analysis like for example repeated measures ANOVA. 
+
+Mixed models require **long format** (univariate) — one row per observation, used for univariate analysis.
+
+```{r}
+#| label: wide-format
+#| echo: false
+dta_wide <- dta_long |>
+  pivot_wider(
+    id_cols     = c(patient_id, treatment, age),
+    names_from  = visit,
+    values_from = score,
+    names_prefix = "visit_"
+  )
+
+dta_wide |> slice(1:8) |> gt()
+```
+
+The simulated long-form dataset and its wide-form representation are exported to Excel, with each assigned a tab.
+
+```{r}
+write_xlsx(
+  list(
+    patients = dta_wide,
+    scores = dta_long
+  ),
+  path = "ws-mixed-data.xlsx"
+)
+save(dta_long, dta_wide, file="ws-mixed-data.RData")
+```
+
+Patients with fewer than 5 visits get `NA` in the later visit columns. In long format, those rows simply don't exist — much cleaner for modelling. Patient specific timepoints are also easily dealt with in long form.
+
+::: {.callout-warning title="SPSS/Excel: Reshape: wide → long"}
+After showing a reshape in Excel and SPSS,  
+the challenge is to repeat it for the simulated data.
+
+Notice how a univariate representation more elegantly deals with imbalance.  
+:::
+
+```{r}
+#| label: long-format
+dta_long_from_wide <- dta_wide |>
+  pivot_longer(
+    cols         = starts_with("visit_"),
+    names_to     = "visit",
+    names_prefix = "visit_",
+    values_to    = "score"
+  ) |>
+  filter(!is.na(score)) |>
+  mutate(visit = as.integer(visit)) |>
+  arrange(patient_id, visit)
+
+dta_long_from_wide |> slice(1:12) |> gt()
+```
+
+### Exploring the Data: Exercise {data-toc-title="Exploration"}
+
+Before modeling and testing,  
+look at your data to ensure all is as expected, and detect anomalies.
+
+- unexpected skewness
+- impossible values
+- sparse categories
+- unexpected imbalance across groups
+- ... 
+
+which require some thought first 
+
+- transformations
+- methods
+- stratification
+- ...
+
+Visualisations focus on key properties, part of your story 
+
+- of the research question, assumptions, ...
+- respecting the nature of the data
+- clearly, without clutter
+
+#### Trajectories
+
+For the analysis of longitudinal data, show the trajectories with a spaghetti plot.
+
+```{r}
+#| label: fig-spaghetti
+#| fig-cap: "Individual trajectories by treatment group"
+#| fig-height: 5
+#| fig-width: 10
+
+dta_long |>
+  ggplot(aes(x = visit, y = score, group = patient_id, colour = treatment)) +
+  geom_line(alpha = 0.5, linewidth = 0.7) +
+  geom_point(alpha = 0.7, size = 1.5) +
+  stat_summary(
+    aes(group = treatment),
+    fun = mean, geom = "line",
+    linewidth = 1.8, linetype = "dashed"
+  ) +
+  scale_colour_manual(values = c(C = col_patient, T = col_accent)) +
+  facet_wrap(~ treatment, labeller = as_labeller(c(
+  C = "Control",
+  T = "Treatment"))) +
+  labs(
+    x = "Visit", y = "SQUARE test score",
+    title = "Individual trajectories per patient",
+    subtitle = "Dashed line = group mean trajectory"
+  ) +
+  theme_bw(base_size = 13) +
+  theme(legend.position = "none")
+```
+
+To avoid clutter:
+
+- facet, color, ...
+- subset random, or guided by relevant properties (mean, variance, ...)
+
+
+```{r}
+#| label: fig-spaghetti-var
+#| fig-cap: "Most/Least variable trajectories by treatment group"
+#| fig-height: 5
+#| fig-width: 6
+
+sel_patients <- dta_long |>
+  group_by(treatment, patient_id) |>
+  summarise(within_var = var(score, na.rm = TRUE), .groups = "drop") |>
+  group_by(treatment) |>
+  slice_min(within_var, n = 1, with_ties = FALSE) |>
+  bind_rows(
+    dta_long |>
+      group_by(treatment, patient_id) |>
+      summarise(within_var = var(score, na.rm = TRUE), .groups = "drop") |>
+      group_by(treatment) |>
+      slice_max(within_var, n = 1, with_ties = FALSE)
+  ) |>
+  distinct(treatment, patient_id)
+
+dta_plot <- dta_long |>
+  semi_join(sel_patients, by = c("treatment", "patient_id"))
+
+dta_plot |>
+  ggplot(aes(x = visit, y = score, group = patient_id, colour = treatment)) +
+  geom_line(alpha = 0.5, linewidth = 0.7) +
+  geom_point(alpha = 0.7, size = 1.5) +
+  scale_colour_manual(
+    values = c(C = col_patient, T = col_accent),
+    labels = c(C = "Control", T = "Treatment")
+  ) +
+  labs(
+    x = "Visit", y = "SQUARE test score",
+    title = "Most/least variable trajectories"
+  ) +
+  theme_bw(base_size = 13) +
+  theme(legend.position = "none")
+```
+
+
+::: {.callout-warning title="SPSS: Spaghetti plots"}
+After showing how to show individual trajectories in SPSS,  
+the challenge is to repeat it for the simulated data.
+
+And pretending that there are too many to show, how would you select a subset ?  
+:::
+
+#### Within- vs. Between-patient variation
+
+A key concept in mixed models is the distinction between **within-patient** (longitudinal) and **between-patient** (cross-sectional) variation.
+
+Possible visualisations of the heterogeneity over patients and the remaining residual variance, for example per time point are given for completeness:
+
+```{r}
+#| label: fig-within-between
+#| fig-cap: "Within vs. between-patient variation"
+#| fig-height: 5.5
+
+patient_means <- dta_long |>
+  group_by(patient_id, treatment) |>
+  summarise(mean_score = mean(score), .groups = "drop")
+
+p_between <- patient_means |>
+  ggplot(aes(x = reorder(patient_id, mean_score), y = mean_score,
+             fill = treatment)) +
+  geom_col(width = 0.7, alpha = 0.8) +
+  scale_fill_manual(values = c(C = col_patient, T = col_accent)) +
+  labs(x = "Patient (sorted by mean)", y = "Mean score",
+       title = "Between-patient variation",
+       subtitle = "Each bar = one patient's average across visits") +
+  theme_bw(base_size = 12) +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
+
+p_within <- dta_long |>
+  left_join(patient_means, by = c("patient_id", "treatment")) |>
+  mutate(within_dev = score - mean_score) |>
+  ggplot(aes(x = factor(visit), y = within_dev, fill = treatment)) +
+  geom_boxplot(alpha = 0.7) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = col_grey) +
+  scale_fill_manual(values = c(C = col_patient, T = col_accent)) +
+  labs(x = "Visit", y = "Score − patient mean",
+       title = "Within-patient variation",
+       subtitle = "Deviation from each patient's own average") +
+  theme_bw(base_size = 12)
+
+#p_between / p_within
+```
+
+```{r}
+#| label: fig-grouping-yes-no
+#| fig-cap: "Accounting for Grouping"
+#| fig-height: 5.5
+#| fig-width: 10
+wrap_plots(p_between,p_within, nrow=1)
+```
+
+The left plot shows how patient averages differ, reflecting heterogeneity, also linking it to treatment. This could be captures by a random intercept.
+
+The right plot offers a look at the fixed effects, time and treatment, as well as the within patient variability.
+
+
+::: {.callout-warning title="SPSS: Variance within and between"}
+After showing a few plots highlighting between and within variability,  
+the challenge is to repeat it for the simulated data.
+
+Would you do it differently, why ?
+:::
+
+### Estimating Mixed Models {data-toc-title="Estimation"}
+
+#### The Model: recap
+
+We specify a **random-intercept model**:
+
+$$
+\text{score}_{ij} = \underbrace{\beta_0 + \beta_1\,\text{visit}_{ij} + \beta_2\,\text{trt}_{i} + \beta_3\,\text{age}_{i}}_{\text{fixed effects}} + \underbrace{u_{0i}}_{\text{random intercept}} + \underbrace{\varepsilon_{ij}}_{\text{residual}},
+$$
+
+for patient $i = 1,\dots,30$ and visit $j = 1,\dots,n_i$, where:
+
+$$
+u_{0i} \overset{\text{i.i.d.}}{\sim} \mathcal{N}(0,\, \sigma^2_{u_0}), \qquad
+\varepsilon_{ij} \overset{\text{i.i.d.}}{\sim} \mathcal{N}(0,\, \sigma^2),
+$$
+
+and $u_{0i} \perp \varepsilon_{ij}$.
+
+The random intercept $u_{0i}$ captures each patient's **systematic deviation** from the population mean — their personal "baseline offset".
+
+#### Fitting Models
+
+Build up models, step by step.
+
+##### Model 0 — Intercept only (pooled)
+
+Variance decomposition: within and between patients.  
+Ignores repeated-measures structure, and fixed effects.  
+Shown for reference.
+
+```{r}
+#| label: mod0
+mod0 <- lmer(score ~ 1 + (1 | patient_id), data = dta_long, REML = TRUE)
+summary(mod0)
+```
+
+- **Random effects**: `Std.Dev` of `(Intercept)` for `patient_id` is $\hat\sigma_{u_0}$ — how much patients vary in their baseline.
+- **Residual**: $\hat\sigma$ — within-patient noise after accounting for patient identity.
+- **Fixed effects**: the grand intercept $\hat\beta_0$.
+
+
+::: {.callout-warning title="SPSS: random intercept model"}
+After showing how to fit a random intercept model in SPSS,  
+the challenge is to repeat it for the simulated data.
+
+How would you interpret the value for the intercept, and its significance ?
+:::
+
+##### Model 1a — Add continuous time (visit)
+
+For longitudinal data the interest typically is in the trajectories over time, the model should account for that.
+
+```{r}
+#| label: mod1
+mod1 <- lmer(score ~ visit + (1 | patient_id), data = dta_long, REML = FALSE)
+tidy_gt(mod1, effects = "fixed")
+```
+
+
+::: {.callout-warning title="SPSS: random intercept with visit effect"}
+After showing how to add a slope within the random intercept model, 
+the challenge is to repeat it for the simulated data.
+
+How to interpret the value for the slope,  
+and how does the interpretation for the intercept change ?
+:::
+
+##### Model 1b — Add categorical time (visit)
+
+As a side note, when the trajectory can not be interpreted on a continuous scale, only between consecutive time points, time can be included as a categorical variable.
+
+```{r}
+#| label: mod1b
+mod1b <- lmer(score ~ factor(visit) + (1 | patient_id), data = dta_long, REML = FALSE)
+tidy_gt(mod1b, effects = "fixed")
+```
+
+::: {.callout-warning title="SPSS: random intercept with visit effect"}
+After showing how to add set of slopes to capture changes over time within the random intercept model, 
+the challenge is to repeat it for the simulated data.
+
+How to interpret the values for the slopes,  
+and how does the interpretation for the intercept change ?
+:::
+
+##### Model 2 — Add treatment
+
+```{r}
+#| label: mod2
+mod2 <- lmer(score ~ visit + treatment + (1 | patient_id),
+             data = dta_long, REML = FALSE)
+tidy_gt(mod2, effects = "fixed")
+```
+
+::: {.callout-warning title="SPSS: add treatment effect"}
+After showing how to add a treatment effect,  
+the challenge is to repeat it for the simulated data.
+
+How to interpret the treatment effect ?
+:::
+
+##### Model 3 — Add age (full fixed effects)
+
+```{r}
+#| label: mod3
+mod3 <- lmer(score ~ visit + treatment + I(age-mean(age)) + (1 | patient_id),
+             data = dta_long, REML = FALSE)
+tidy_gt(mod3, effects = "fixed")
+```
+
+Centering, or scaling, can help interpretation, and for complex models make estimation more stable.
+
+
+::: {.callout-warning title="SPSS: add continuous centered age effect"}
+After showing how to center age and add it to the model,  
+the challenge is to repeat it for the simulated data.
+
+Hoe does the centering change the interpretation ?  
+What if the age was standardized instead ?
+:::
+
+##### Model 4 — Add random slope for time
+
+Allows each patient to have their own *rate of change* over time:
+
+$$
+\text{score}_{ij} = (\beta_0 + u_{0i}) + (\beta_1 + u_{1i})\,\text{visit}_{ij} + \beta_2\,\text{trt}_{i} + \beta_3\,\text{age}_{i} + \varepsilon_{ij}
+$$
+
+$$
+\begin{pmatrix} u_{0i} \\ u_{1i} \end{pmatrix}
+\sim \mathcal{N}\!\left(
+\mathbf{0},\;
+\begin{pmatrix} \sigma^2_{u_0} & \sigma_{u_0 u_1} \\ \sigma_{u_0 u_1} & \sigma^2_{u_1} \end{pmatrix}
+\right)
+$$
+
+```{r}
+#| label: mod4
+mod4 <- lmer(score ~ visit + treatment + I(age-mean(age)) + (1 + visit | patient_id),
+             data = dta_long, REML = FALSE)
+tidy_gt(mod4, effects = "fixed")
+```
+
+Be awaret, not only should it be possible to fit a slope, there should be sufficient to estimate their variance well enough.
+
+
+::: {.callout-warning title="SPSS: random slope"}
+After showing how to add a random slope,   
+the challenge is to repeat it for the simulated data.
+
+How to interpret the estimated value for the random slope.
+:::
+
+### Model Comparison {data-toc-title="Model Comparison"}
+
+Evaluate parts of a model by comparing the model with and without that part. Use for example the Likelihood Ratio Test (LRT) or an AIC.
+
+With maximized log-likelihood \(\ell(\cdot)\) the LRT is
+
+$$
+\mathrm{LRT} = 2\left\{\ell(\text{complex model}) - \ell(\text{reduced model})\right\}.
+$$
+
+Important:  
+to evaluate fixed-effects, use Maximum Likelihood (ML)  
+and only use Restricted ML (REML) to evaluate random-effects.
+
+#### Evaluation of fixed effects 
+
+Models estimated with ML can be compared.
+
+```{r}
+#| label: anova-fixed
+anova(mod1, mod2, mod3)
+```
+
+Note: to compare model 3 with model 2,  
+the higher log-likelihood is of the more elaborate model (6 parameters)
+the lower log-likelihood is of the less elaborate model (5 parameters)
+
+evaluate the probability for a a higher value than 
+the double the difference (-2*LL) on a $\chi^2$ distribution  
+with degrees of freedom equal to the difference in number of parameters.
+
+
+::: {.callout-warning title="SPSS: LRT for fixed effects"}
+After showing how to perform an LRT for fixed effects,  
+the challenge is to repeat it for the simulated data.
+
+Can you compare model 3 and model 1 ? (p=.38)
+:::
+
+#### Evaluation of random effects
+
+```{r}
+#| label: anova-random
+
+# Re-fit mod3 and mod4 with ML (already done above)
+anova(mod3, mod4)
+```
+
+Parameters are at the boundary of the paramaterspace when testing whether a variance is 0, special care is required:
+
+Testing a random intercept against no random effect, we compare
+
+$$
+H_0: \sigma^2_{b_0} = 0
+\qquad \text{vs} \qquad
+H_1: \sigma^2_{b_0} > 0.
+$$
+
+With \(\sigma^2_{b_0}=0\) on the boundary, the asymptotic null distribution of the LRT is
+$$
+\mathrm{LRT} \;\xrightarrow{d}\; \tfrac{1}{2}\chi^2_0 + \tfrac{1}{2}\chi^2_1.
+$$
+
+Equivalently, the p-value is
+$$
+p = \tfrac{1}{2} \Pr\left(\chi^2_1 \ge \mathrm{LRT}\right).
+$$
+
+For testing whether a random slope is needed assuming the random intercept is required, acknowledging that with a random slope there could also be random covariance:
+
+$$
+H_0: \sigma^2_{b_1} = 0
+\qquad \text{vs} \qquad
+H_1: \sigma^2_{b_1} > 0.
+$$
+
+The asymptotic null distribution of the likelihood ratio statistic:
+
+$$
+\mathrm{LRT} \;\xrightarrow{d}\; \tfrac{1}{2}\chi^2_1 + \tfrac{1}{2}\chi^2_2,
+$$
+
+For complex models a model-specific mixture or a parametric bootstrap is typically preferable.
+
+
+::: {.callout-warning title="SPSS: LRT for random effects"}
+After showing how to do a LRT for random effedcts,  
+the challenge is to repeat it for the simulated data.
+
+Is a random slope required ?
+:::
+
+#### AIC / BIC summary table
+
+An alternative method for model evaluation and building are information criteria. AIC is standard, BIC is interesting to push more towards simpler models.
+
+```{r}
+#| label: model-comparison-table
+
+model_list <- list(
+  "M0: intercept only"       = mod0,
+  "M1: + visit"              = mod1,
+  "M2: + treatment"          = mod2,
+  "M3: + age (full FE)"      = mod3,
+  "M3*: - treatment"          = update(mod3,.~.-treatment),
+  "M4: + random slope"       = mod4
+)
+
+map_dfr(model_list, glance, .id = "model") |>
+  select(model, AIC, BIC, logLik, df.residual) |>
+  mutate(across(where(is.numeric), \(x) round(x, 1))) |>
+  gt() |>
+  tab_style(
+    style = cell_fill(color = "#d4edda"),
+    locations = cells_body(rows = AIC == min(AIC))
+  )
+```
+
+
+::: {.callout-warning title="SPSS: AIC and BIC to compare models"}
+After showing how to extract the AIC and BIC,  
+the challenge is to repeat it for the simulated data.
+
+Do the conclusions confirm the LRT based conclusions ?
+:::
+
+Following the data the model of choice would be model 3 minus the treatment. Because we assume treatment is of primary concern in current study, it is nevertheless retained.
+
+### Fixed and Random Effect Estimates {data-toc-title="Estimates"}
+
+The model is selected (**mod3** — random intercept with full fixed effects) and re-fitted with REML for unbiased variance estimates.
+
+```{r}
+#| label: final-model
+
+mod_final <- lmer(score ~ visit + treatment + scale(age) + (1 | patient_id),
+                  data = dta_long, REML = TRUE)
+```
+
+For the resulting model, the estimates are considered.
+
+
+::: {.callout-warning title="SPSS: Refit finalized model with REML"}
+After showing the refitting of a final model,  
+the challenge is to repeat it for the simulated data.
+
+Does it matter, REML or ML ?
+:::
+
+#### Fixed effects
+
+```{r}
+#| label: tab-fixed-effects
+tidy_gt(mod_final, effects = "fixed", conf.int = TRUE)
+```
+
+::: {.callout-warning title="SPSS: Test for the fixed effect"}
+After showing how to test using a LRT for the fixed effect for treatment,  
+the challenge is to repeat it for the simulated data.
+
+How to interpret the estimated treatment effect ?
+:::
+
+#### Variance components
+
+```{r}
+#| label: tab-random-effects
+tidy_gt(mod_final, effects = "ran_pars")
+```
+
+
+::: {.callout-warning title="SPSS: Test for the (co-) variances"}
+After showing how to test using a LRT for the random parameters,  
+the challenge is to repeat it for the simulated data,  
+focus on testing whether a random slope should be added.
+
+How to interpret the LRT test p-value ?
+:::
+
+
+#### Intraclass Correlation Coefficient (ICC)
+
+The ICC quantifies the proportion of the **total variance**  attributable to between-patient differences (in random intercepts models):
+
+Remember:
+
+$$
+ICC = \frac{\sigma^2_{u_0}}{\sigma^2_{u_0} + \sigma^2}
+$$
+
+```{r}
+#| label: icc
+
+vc <- as.data.frame(VarCorr(mod_final))
+sigma2_u0  <- vc$vcov[vc$grp == "patient_id"]
+sigma2_eps <- vc$vcov[vc$grp == "Residual"]
+icc <- sigma2_u0 / (sigma2_u0 + sigma2_eps)
+
+tibble(
+  sigma2_u0  = round(sigma2_u0, 3),
+  sigma2_eps = round(sigma2_eps, 3),
+  ICC        = round(icc, 3)
+) |> gt()
+```
+
+
+::: {.callout-warning title="SPSS: Extract the ICC"}
+After showing how to extract the ICC,  
+the challenge is to repeat it for the simulated data.
+:::
+
+As the ICC gets higher, the need for accounting correlation within the model, making use of a mixed model, increases.
+
+### Prediction
+
+After estimation, using the estimates, a prediction can be made for 
+
+- patients present (in-bag)
+- new / fictional patients (out-of-bag)
+
+Predictions depend on what is in the model,  
+with various building blocks in the model decisions have to be made.
+
+Predictions often are a good tool to understand the model,  
+to see what it implies.
+
+#### Population-Level Predictions {data-toc-title="Population Predictions"}
+
+Population-level predictions use only the **fixed effects** (marginal predictions):
+
+$$
+\hat{y}_{ij}^{\,\text{pop}} = \hat\beta_0 + \hat\beta_1\,\text{visit}_{ij} + \hat\beta_2\,\text{trt}_{i} + \hat\beta_3\,\text{age}_{i}
+$$
+
+```{r}
+#| label: fig-population-predictions
+#| fig-cap: "Population-level predicted trajectories by treatment"
+#| fig-height: 4.5
+
+new_pop <- expand_grid(
+  visit     = 1:5,
+  treatment = c("C", "T"),
+  age       = mean(dta_long$age)   # at average age
+)
+
+new_pop <- new_pop |>
+  mutate(pred_pop = predict(mod_final, newdata = new_pop, re.form = NA))
+
+ggplot(new_pop, aes(x = visit, y = pred_pop, colour = treatment, group = treatment)) +
+  geom_line(linewidth = 1.6) +
+  geom_point(size = 3) +
+  scale_colour_manual(values = c(C = col_patient, T = col_accent)) +
+  labs(
+    x = "Visit", y = "Predicted SQUARE test score",
+    title = "Population-level predicted trajectories",
+    subtitle = "At average age; random effects set to zero"
+  ) +
+  theme_bw(base_size = 13)
+```
+
+This prediction assumes an average age patient (our decision), for both Control and Treatment conditions at each time point. This plot can be generated for different ages.
+
+
+::: {.callout-warning title="SPSS: Population level prediction"}
+After showing the prediction of the general average accounting for within patient correlations,  
+the challenge is to repeat it for the simulated data.
+:::
+
+#### Subject-Specific Predictions {data-toc-title="Subject Predictions"}
+
+Subject-specific predictions use what is known after estimation. 
+
+Predictions depend on the fixed effects (conditional average),  
+and on the random effects (group specific deviations) following each patient's random intercept $\hat u_{0i}$:
+
+$$
+\hat{y}_{ij}^{\,\text{subj}} = \hat\beta_0 + \hat\beta_1\,\text{visit}_{ij} + \hat\beta_2\,\text{trt}_{i} + \hat\beta_3\,\text{age}_{i} + \hat u_{0i}
+$$
+
+```{r}
+#| label: fig-subject-predictions
+#| fig-cap: "Subject-specific predicted vs. observed trajectories (first 12 patients)"
+#| fig-height: 6
+
+dta_pred <- dta_long |>
+  mutate(
+    pred_pop  = predict(mod_final, re.form = NA),
+    pred_subj = predict(mod_final)
+  )
+
+dta_pred |>
+  filter(patient_id <= 12) |>
+  ggplot(aes(x = visit)) +
+  geom_point(aes(y = score), colour = "grey40", size = 2) +
+  geom_line(aes(y = pred_subj, colour = treatment), linewidth = 1.1) +
+  geom_line(aes(y = pred_pop, colour = treatment),
+            linewidth = 0.7, linetype = "dashed", alpha = 0.6) +
+  scale_colour_manual(values = c(C = col_patient, T = col_accent)) +
+  facet_wrap(~patient_id, ncol = 4, labeller = label_both) +
+  labs(
+    x = "Visit", y = "Score",
+    title = "Subject-specific (solid) vs. population (dashed) predictions",
+    subtitle = "Points = observed scores"
+  ) +
+  theme_bw(base_size = 11) +
+  theme(legend.position = "top")
+```
+
+::: {.callout-warning title="SPSS: Patient level prediction"}
+After showing the prediction of a particular patients' outcome,  
+the challenge is to repeat it for the simulated data.
+:::
+
+#### Predicting a New Patient {data-toc-title="New Patient"}
+
+For a **new patient** not in the dataset, we cannot estimate their $u_{0i}$ — we set it to zero (population average). This is the **marginal prediction**.
+
+```{r}
+#| label: new-patient-prediction
+
+new_patient <- tibble(
+  visit     = 1:5,
+  treatment = "T",
+  age       = 40,
+  patient_id = NA_integer_    # new patient
+)
+
+new_patient <- new_patient |>
+  mutate(
+    pred = predict(mod_final, newdata = new_patient, re.form = NA,
+                   allow.new.levels = TRUE)
+  )
+
+new_patient |>
+  select(visit, treatment, age, pred) |>
+  mutate(pred = round(pred, 2)) |>
+  gt() |>
+  tab_header(
+    title    = "Predicted scores for a new 40-year-old patient, treatment B",
+    subtitle = "Random intercept set to 0 (population average)"
+  )
+```
+
+::: {.callout-warning title="SPSS: New patient level prediction"}
+After showing the prediction of a new patients' outcome,  
+the challenge is to repeat it for the simulated data.
+:::
+
+### Diagnostics
+
+The results from estimating and testing are conditional on the model and its appropriateness.  
+
+A model is virtually never fully correct, an evaluation should be performed to identify possible causes of bias.
+
+Good diagnostics for LMMs check:
+
+1. Linearity and homoscedasticity of **residuals**
+2. Normality of **residuals**
+3. Normality of **random effects** (BLUPs)
+4. Influential observations
+
+```{r}
+#| label: diagnostic-setup
+
+res_df <- dta_long |>
+  mutate(
+    fitted_val = fitted(mod_final),
+    resid_val  = resid(mod_final),
+    std_resid  = resid_val / sigma(mod_final)
+  )
+
+blups <- ranef(mod_final)$patient_id |>
+  rownames_to_column("patient_id") |>
+  rename(u0_hat = `(Intercept)`)
+```
+
+#### Residuals vs. Fitted
+
+Residuals should be **randomly scattered** around zero with **constant spread**. 
+
+- systematic curve suggests a missing non-linear term
+- funnel shape suggests heteroscedasticity.
+
+```{r}
+#| label: fig-resid-fitted
+#| fig-cap: "Residuals vs. fitted values"
+#| fig-height: 4
+
+res_df |>
+  ggplot(aes(x = fitted_val, y = resid_val)) +
+  geom_point(alpha = 0.6, colour = col_patient) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = col_grey) +
+  geom_smooth(se = FALSE, colour = col_pop, linewidth = 1) +
+  labs(x = "Fitted values", y = "Residuals",
+       title = "Residuals vs. Fitted") +
+  theme_bw(base_size = 13)
+```
+
+::: {.callout-warning title="SPSS: Residual Analysis over fitted values"}
+After showing the residuals as a function of the fitted values,  
+the challenge is to repeat it for the simulated data.
+:::
+
+#### Q–Q Plot of Residuals
+
+Residuals should ideally show a **Normal** distribution. 
+
+- normality follows from the addition of independent random perturbations
+- normality follows from the central limit theorem
+
+```{r}
+#| label: fig-qq-resid
+#| fig-cap: "Q–Q plot of standardised residuals"
+#| fig-height: 4
+
+res_df |>
+  ggplot(aes(sample = std_resid)) +
+  stat_qq(alpha = 0.6, colour = col_patient) +
+  stat_qq_line(colour = col_pop, linewidth = 1) +
+  labs(title = "Normal Q–Q: Standardised Residuals",
+       x = "Theoretical Quantiles", y = "Sample Quantiles") +
+  theme_bw(base_size = 13)
+```
+
+::: {.callout-warning title="SPSS: Residual Analysis, Normality"}
+After showing the normality of residuals using a qqplot,  
+the challenge is to repeat it for the simulated data.
+:::
+
+#### Normality of Random Effects (BLUPs)
+
+Random effects typically are assumed following samples from a normal distribution.
+
+- normality of groupspecific effects follows from the addition of independent random perturbations
+- normality follows from the central limit theorem
+
+```{r}
+#| label: fig-qq-blups
+#| fig-cap: "Q–Q plot of estimated random intercepts"
+#| fig-height: 4
+
+blups |>
+  ggplot(aes(sample = u0_hat)) +
+  stat_qq(alpha = 0.7, colour = col_accent) +
+  stat_qq_line(colour = col_pop, linewidth = 1) +
+  labs(title = "Normal Q–Q: Random Intercepts (BLUPs)",
+       x = "Theoretical Quantiles", y = "Sample Quantiles") +
+  theme_bw(base_size = 13)
+```
+
+
+::: {.callout-warning title="SPSS: Group-specific residual Analysis, Normality"}
+After showing the normality of residuals using a qqplot,  
+the challenge is to repeat it for the simulated data.
+:::
+
+#### Scale–Location Plot
+
+The square root of absolute valued residuals makes it easier to discover heteroscedasticity, here as a function of the fitted value again. The smoother, a loess line, helps diagnostics.
+
+```{r}
+#| label: fig-scale-location
+#| fig-cap: "Scale–location plot (homoscedasticity check)"
+#| fig-height: 4
+
+res_df |>
+  mutate(sqrt_abs_resid = sqrt(abs(std_resid))) |>
+  ggplot(aes(x = fitted_val, y = sqrt_abs_resid)) +
+  geom_point(alpha = 0.6, colour = col_patient) +
+  geom_smooth(se = FALSE, colour = col_pop, linewidth = 1) +
+  labs(x = "Fitted values", y = expression(sqrt("|Standardised residuals|")),
+       title = "Scale–Location") +
+  theme_bw(base_size = 13)
+```
+
+::: {.callout-warning title="SPSS: Residual Analysis over fitted values"}
+After showing the square rooted absolute valued residuals as a function of the fitted values,  
+the challenge is to repeat it for the simulated data.
+:::
+
+#### BLUP Caterpillar Plot
+
+Using the estimated heterogeneity, variance over patients, confidence intervals can be obtained around the random effects for each particular patient.  
+
+```{r}
+#| label: fig-caterpillar
+#| fig-cap: "Caterpillar plot of random intercepts per patient"
+#| fig-height: 5.5
+
+sigma_u <- sqrt(as.data.frame(VarCorr(mod_final))$vcov[1])
+
+blups |>
+  arrange(u0_hat) |>
+  mutate(
+    patient_id = factor(patient_id, levels = patient_id),
+    lower = u0_hat - 1.96 * sigma_u / sqrt(nrow(blups)),
+    upper = u0_hat + 1.96 * sigma_u / sqrt(nrow(blups))
+  ) |>
+  ggplot(aes(x = patient_id, y = u0_hat)) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = col_grey) +
+  geom_errorbar(aes(ymin = lower, ymax = upper),
+                width = 0.3, colour = col_grey, alpha = 0.7) +
+  geom_point(size = 2.5, colour = col_patient) +
+  labs(
+    x = "Patient ID (sorted)", y = expression(hat(u)[0][i]),
+    title = "Caterpillar plot: estimated random intercepts",
+    subtitle = "Patients above zero tend to score higher than average"
+  ) +
+  theme_bw(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 7))
+```
+
+::: {.callout-warning title="SPSS: Residual Analysis over fitted values"}
+After showing the extraction of confidence intervals for the random effects,  
+the challenge is to repeat it for the simulated data.
+:::

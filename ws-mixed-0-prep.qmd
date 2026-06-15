@@ -1,0 +1,85 @@
+```{r}
+group_grays_9 <- gray.colors(9, start = 0.2, end = 0.8)
+
+col1 <- "#039"
+col2 <- "#f60"
+
+group_colors_9 <- colorRampPalette(c(col1, "#99664D", col2))(9)
+```
+
+<!-- 0 -->
+
+```{r}
+#| label: dta_base
+set.seed(123)
+n <- 64
+mu_true <- 15
+sigma <- sqrt(5)
+scores <- rnorm(n, mean = mu_true, sd = sigma)
+id <- seq_along(scores)
+dta_base <- data.frame(id = id, score = scores)
+```
+
+<!-- 1 -->
+
+```{r}
+#| label: dta_groups
+n1 <- n %/% 2
+n2 <- n - n1
+dta_groups <- dta_base |>
+  mutate(group = factor(c(rep("group 1", n1), rep("group 2", n2)))) 
+
+tmp <- dta_groups
+for(it in 1:3){
+  tmp <- tmp |> mutate(tmp=case_when(group=='group 1'~ifelse(score<15,15,score), group=='group 2'~ifelse(score>15,15,score)))
+  tmp <- tmp |> mutate(group=factor(case_when(score==max(tmp)~'group 2', score==min(tmp)~'group 1', TRUE~group)))
+}
+dta_groups <- tmp |> arrange(group,id) |> mutate(id=1:n())
+dta_groups <- dta_groups |> mutate(group=recode(group, 'group 1'='control', 'group 2'='treatment'))
+```
+
+
+```{r}
+#| label: dta_cont
+dta_cont <- dta_base |>
+  full_join(dta_base |> arrange(score) |> mutate(id2 = 1:n())) |>
+  mutate(idx = id + id2) |>
+  arrange(idx) |>
+  mutate(idx = 1:n(), age = 25 + idx + runif(n(), -.5, .5)) |>
+  select(id, score, age)
+```
+
+
+```{r}
+#| label: dta_dich
+dta_dich <- dta_cont |>
+  mutate(age_d = factor(age > 60, labels = c("age ≤60", "age >60"))) |>
+  arrange(age)
+```
+
+
+```{r}
+#| label: data_int
+dta_int <- dta_cont |>
+  mutate(group = factor(id > 32, labels=c("0","1"), levels = c(FALSE, TRUE))) |> mutate(group=recode(group, '0'='control', '1'='treatment'))
+```
+
+<!-- 2 -->
+
+
+<!-- ex -->
+
+```{r}
+set.seed(2025)
+n_per_group <- 30; T_r <- 5
+dta_rct <- do.call(rbind, lapply(1:n_per_group, function(i) {
+  do.call(rbind, lapply(0:1, function(trt) {
+    u0 <- rnorm(1, 0, 6); u1 <- rnorm(1, 0, 0.4)
+    time <- 0:(T_r - 1)
+    y    <- 50 + 0 * trt + (1 + 2 * trt) * time + u0 + u1 * time + rnorm(T_r, 0, 3)
+    data.frame(id  = paste(trt, i, sep = "_"),
+               trt = factor(trt, levels=c('0','1'),labels=c('C','T')),
+               time = time, y = y)
+  }))
+}))
+```

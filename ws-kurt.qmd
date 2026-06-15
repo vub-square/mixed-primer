@@ -1,0 +1,190 @@
+---
+title: "Untitled"
+format: html
+---
+
+
+
+```{r}
+
+#WPO3
+
+#--------Random intercept-------------------------------------------
+library(lme4)
+library(tidyverse)
+library(lmerTest)
+library(car)
+library(effectsize)
+set.seed(11)
+
+# Simulatie parameters
+n_subjects <- 30  # aantal deelnemers
+n_timepoints <- 6  # aantal meetmomenten
+error_sd <- 7         # Residual SD
+subject_sd <- 4       # Random intercept SD
+fixed_slope <- 0.9    # Zwak effect tijd
+Intercept <- 50 # grand mean
+
+
+# Simuleer data
+data1 <- tibble(
+  subject_id = rep(1:n_subjects, each = n_timepoints),
+  time = rep(1:n_timepoints, times = n_subjects),
+  subject_effect = rep(rnorm(n_subjects, 0, subject_sd), each = n_timepoints),
+  error = rnorm(n_subjects * n_timepoints, 0, error_sd),
+  y = Intercept + subject_effect + fixed_slope * time + error
+)
+
+# Analyse
+model1 <- lmer(y ~ 1 + time + (1 | subject_id), data = data1)
+summary(model1)
+
+# Bereken ICC
+intercept_var <- as.numeric(VarCorr(model1)$subject_id[1,1])
+residual_var <- attr(VarCorr(model1), "sc")^2
+
+icc <- intercept_var / (intercept_var + residual_var)
+print(paste("ICC:", round(icc, 2)))
+
+print(cohens_f(model1))
+
+# Visualisatie - ruwe data
+ggplot(data1, aes(x = factor(time), y = y, color = subject_id, group = subject_id)) +
+  geom_line(alpha = 0.5) +
+  geom_point() +
+  labs(title = "Ruwe data",
+       x = "Tijdstip", y = "Uitkomst")
+
+
+# Visualisatie - effect
+data1$fixed_effect_fit <- predict(model1)
+
+ggplot(data1, aes(x = factor(time), y = fixed_effect_fit, group = subject_id, color = subject_id)) +
+  geom_line(alpha = 0.5) +
+  geom_point() +
+  labs(title = "Fixed effects alleen (zonder random intercept)",
+       x = "Tijdstip", y = "Voorspelling op basis van fixed effects")
+
+# Visualisatie - ruis
+data1$ruis <- residuals(model1)
+
+ggplot(data1, aes(x = factor(time), y = ruis, group = subject_id, color = subject_id)) +
+  geom_line(alpha = 0.5) +
+  geom_point() +
+  labs(title = "ruis",
+       x = "Tijdstip", y = "modelresiduen")
+
+ruis_wide1 <- reshape(as.data.frame(data1)[, c("subject_id", "time", "ruis")], timevar = "time", idvar = "subject_id", direction = "wide")
+library(reshape2)
+ruis_long1 <- melt(ruis_wide1, id.vars = "subject_id", variable.name = "time", value.name = "ruis")
+
+ggplot(ruis_long1, aes(x = time, y = subject_id, fill = ruis)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0) +
+  labs(title = "Heatmap van residuen per subject en tijdstip",
+       x = "Tijdstip", y = "Subject", fill = "Residu") +
+  theme_minimal()
+
+plot(ggplot(ruis_long1, aes(x = subject_id, y = ruis)) +   geom_jitter(width = 0.2, alpha = 0.4) + stat_summary(fun = mean, geom = "point", color = "red", size = 3) +   stat_summary(fun.data = mean_sdl, fun.args = list(mult = 2), geom = "errorbar", width = 0.2, color = "red") +   labs(title = "Intra-subject variabiliteit", y = "Residu", x = "Subject") + theme_minimal())
+plot(ggplot(ruis_long1, aes(x = time, y = ruis)) +   geom_jitter(width = 0.2, alpha = 0.4) + stat_summary(fun = mean, geom = "point", color = "red", size = 3) +   stat_summary(fun.data = mean_sdl, fun.args = list(mult = 2), geom = "errorbar", width = 0.2, color = "red") +   labs(title = "Inter-subject variabiliteit", y = "Residu", x = "Time") + theme_minimal())
+
+# modelvergelijking
+
+model_random_int_ml <- lmer(y ~ time + (1 | subject_id), data = data1, REML = FALSE)
+model_fixed_ml <- lm(y ~ time, data = data1)
+
+AIC(model_fixed_ml, model_random_int_ml)
+
+# #-----------------------Random slope + random intercept-----------------------------
+set.seed(11)
+# Simulatie parameters
+n_subjects <- 25
+n_timepoints <- 5
+conditions <- c("A", "B")
+
+# Simuleer data
+data3 <- tibble(
+  subject_id = rep(1:n_subjects, each = n_timepoints),
+  time = rep(1:n_timepoints, times = n_subjects),
+  condition = rep(sample(conditions, n_subjects, replace = TRUE),
+                  each = n_timepoints),
+  # Random intercept en slope
+  subject_intercept = rep(rnorm(n_subjects, 0, 2), each = n_timepoints),
+  subject_slope = rep(rnorm(n_subjects, 0, 3), each = n_timepoints),
+  # Fixed effects
+  condition_effect = ifelse(condition == "B", 1, 0),
+  time_effect = 2,
+  interaction_effect = ifelse(condition == "B", 0.5, 0) * time,
+  # Random error
+  error = rnorm(n_subjects * n_timepoints, 0, 3),
+  # Response variabele
+  y = 50 + subject_intercept +
+    (time_effect + interaction_effect + subject_slope) * time +
+    condition_effect + error
+)
+
+# Analyse
+model3 <- lmer(y ~ condition + time + condition * time + (1 + time | subject_id), data = data3)
+summary(model3)
+
+intercept_var <- as.numeric(VarCorr(model3)$subject_id[1,1])
+residual_var <- attr(VarCorr(model3), "sc")^2
+
+icc <- intercept_var / (intercept_var + residual_var)
+print(paste("ICC:", round(icc, 2)))
+
+slope_var <- as.numeric(VarCorr(model3)$subject_id["time", "time"])
+pseudo.icc <- slope_var / (slope_var + residual_var)
+print(paste("ICC:", round(pseudo.icc, 2)))
+
+# Visualisatie - data
+ggplot(data3, aes(x = time, y = y, color = condition, group = subject_id)) +
+  geom_line(alpha = 0.5) +
+  geom_smooth(aes(group = condition), method = "lm", size = 2) +
+  labs(title = "Random slope model met fixed effects",
+       x = "Tijd", y = "Uitkomst", color = "Conditie")
+
+# Visualisatie - effect
+data3$fixed_effect_fit <- predict(model3)
+
+ggplot(data3, aes(x = factor(time), y = fixed_effect_fit, group = subject_id, color = condition)) +
+  geom_line(alpha = 0.5) +
+  geom_smooth(aes(group = condition), method = "lm", size = 2) +
+  geom_point() +
+  labs(title = "Fixed effects alleen (zonder random intercept)",
+       x = "Tijdstip", y = "Voorspelling op basis van fixed effects")
+
+# Visualisatie - ruis
+
+data3$ruis <- residuals(model3)
+
+ggplot(data3, aes(x = factor(time), y = ruis, group = subject_id, color = condition)) +
+  geom_line(alpha = 0.5) +
+  geom_smooth(aes(group = condition), method = "lm", size = 2) +
+  geom_point() +
+  labs(title = "modelresiduen",
+       x = "Tijdstip", y = "residu")
+
+ruis_wide3 <- reshape(as.data.frame(data3)[, c("subject_id", "time", "ruis")], timevar = "time", idvar = "subject_id", direction = "wide")
+ruis_long3 <- melt(ruis_wide3, id.vars = "subject_id", variable.name = "time", value.name = "ruis")
+
+ggplot(ruis_long3, aes(x = time, y = subject_id, fill = ruis)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0) +
+  labs(title = "Heatmap van residuen per subject en tijdstip",
+       x = "Tijdstip", y = "Subject", fill = "Residu") +
+  theme_minimal()
+
+plot(ggplot(ruis_long3, aes(x = subject_id, y = ruis)) +   geom_jitter(width = 0.2, alpha = 0.4) + stat_summary(fun = mean, geom = "point", color = "red", size = 3) +   stat_summary(fun.data = mean_sdl, fun.args = list(mult = 2), geom = "errorbar", width = 0.2, color = "red") +   labs(title = "Intra-subject variabiliteit", y = "Residu", x = "Subject") + theme_minimal())
+plot(ggplot(ruis_long3, aes(x = time, y = ruis)) +   geom_jitter(width = 0.2, alpha = 0.4) + stat_summary(fun = mean, geom = "point", color = "red", size = 3) +   stat_summary(fun.data = mean_sdl, fun.args = list(mult = 2), geom = "errorbar", width = 0.2, color = "red") +   labs(title = "Inter-subject variabiliteit", y = "Residu", x = "Time") + theme_minimal())
+
+
+# modelvergelijking
+
+model_random_int_ml <- lmer(y ~ condition + time + condition * time + (1 | subject_id), data = data3, REML = FALSE)
+model_random_slope_ml <- lmer(y ~ condition + time + condition * time + (1 + time | subject_id), data = data3, REML = FALSE)
+model_fixed_ml <- lm(y ~ condition + time + condition * time, data = data3)
+
+AIC(model_fixed_ml, model_random_int_ml, model_random_slope_ml)
+
+```

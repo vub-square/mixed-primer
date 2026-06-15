@@ -1,0 +1,193 @@
+## Adding a Random Slope {data-toc-title="Random Slope"}
+
+### Heterogeneity of Effects
+
+A cluster specific slope (effect) can be considered sampled from a common population, with a mean and variance. This is equivalent to cluster specific intercepts.
+
+::: {.equation-box}
+**Level 1:**
+$$
+y_{ij} = \beta_{0j} + \underline{\beta_{1j} x_{ij}} + \varepsilon_{ij}, \qquad \varepsilon_{ij} \sim \mathcal{N}(0,\ \sigma^2)
+$$
+
+**Level 2:**
+$$
+\beta_{0j} = \gamma_{00} + u_{0j}, \qquad \underline{\beta_{1j}} = \gamma_{10} + u_{1j}
+$$
+
+**Distributional assumption for the random effects:**
+$$
+\begin{pmatrix} u_{0j} \\ u_{1j} \end{pmatrix} \sim \mathcal{N}\!\left(\begin{pmatrix}0\\0\end{pmatrix},\ \boldsymbol{\Psi}\right), \qquad \boldsymbol{\Psi} = \begin{pmatrix} \underline{\tau_{00}} & \underline{\tau_{01}} \\ \tau_{01} & \underline{\tau_{11}} \end{pmatrix}
+$$
+
+**Combined:**
+$$
+y_{ij} = \underbrace{\gamma_{00} + \gamma_{10} x_{ij}}_{\text{fixed}} + \underbrace{u_{0j} + u_{1j} x_{ij} + \varepsilon_{ij}}_{\text{random}}
+$$
+:::
+
+$\boldsymbol{\Psi}$ captures:
+
+- $\tau_{00}$: how much cluster intercepts vary
+- $\tau_{11}$: how much cluster slopes vary
+- $\tau_{01}$: covariance between intercept and slope 
+  (e.g., high-baseline clusters may also have steeper slopes)
+
+```{r}
+#| eval: false
+dta2 <- dta_grouped |> group_by(group) |> mutate(av=mean(score)) |> ungroup() |> mutate(av=av-mean(score),agec=age-mean(age)) |> mutate(score=score+(av*.05*agec))
+dta2x <- bind_rows(dta_grouped, dta2 |>select(-c(av,agec)) |> mutate(group=group+10))
+lmer(score~age+(1+age|group),data=dta2x)
+ggplot(data=dta2x,aes(y=score,x=age,group=group)) + geom_line() + geom_point()
+```
+
+
+```{r}
+#| label: dta_grouped_x2
+dta_grouped_x2 <- dta_grouped |> group_by(group) |> mutate(av=mean(score)) |> ungroup() |> mutate(av=av-mean(score),agec=age-mean(age)) |> mutate(score=score+(av*.05*agec))
+dta_grouped_x2 <- bind_rows(dta_grouped, dta_grouped_x2 |>select(-c(av,agec)) |> mutate(group=factor(as.numeric(as.character(group))+10)))
+# ggplot(data=dta_grouped_x2,aes(y=score,x=age,group=group)) + geom_line() + geom_point()
+```
+
+```{r}
+#| label: fig-random-slope
+#| fig-cap: "Random intercept + random slope model."
+#| fig-height: 5
+ggplot(dta_grouped_x2, aes(x=age, y=score, color = factor(group))) +
+  geom_point(alpha = 0.25, size = 1.5) + geom_smooth(method='lm', se=FALSE) + geom_smooth(aes(group=1), method='lm', color='black', linetype=2) +
+  scale_color_manual(values=gray.colors(18,start=0.2,end=0.8), guide="none") + labs(title = "Increased variability of slopes",
+       x = "age", y = "score", color = "Group")
+```
+
+```{r}
+lmer_slope_18 <- lmer(score~age+(1+age|group),data=dta_grouped_x2)
+tidy_mixed_gt(lmer_slope_18)
+glance_mixed_gt(lmer_slope_18)
+```
+
+Convergence problems: 
+
+- few groups (< 10–20), covariance $\boldsymbol{\Psi}$ can be hard to estimate reliably
+  - center the predictors to remove correlation random intercept - random slope
+  - avoid estimation of covariance: `(1 + age || group)` which constrains $\tau_{01} = 0$.
+
+```{r}
+tidy_mixed_gt(lmer(score~age+(1+age||group),data=dta_grouped))
+```
+
+# Technicalities
+
+Statistical inference is about
+
+- statistical estimation &rarr; size
+  - estimate: my best guess
+  - standard error: uncertainty about my best guess
+- statistical testing &rarr; decision
+  - p-value: probability that by chance
+  - change in AIC: improved model
+
+## ML vs REML in Mixed Models  {data-toc-title="ML vs REML"}
+
+Estimation typically by **Maximum Likelihood (ML)** or **Restricted Maximum Likelihood (REML)**.  
+
+Optimize likelihood function
+
+- ML estimates **fixed effects and variance components together**
+- REML estimate **the variance components** on the information after removal of fixed effects
+
+REML reduces small-sample bias in variance estimates (small number of clusters)
+
+Use **REML** when
+
+- estimation of **variance components / random effects**.
+- fitting a *final* model
+
+Use **ML** when
+
+- comparison of **nested models with different fixed-effects structure** 
+- focus on testing or selecting fixed effects
+
+## Testing Variance Components  {data-toc-title="Testing Variances"}
+
+For variance components, the null hypothesis typically assumes variances at the **boundary** of the parameter space (e.g. $\tau^2 = 0$).  
+
+The asymptotic distribution of the **likelihood ratio test (LRT)** can be considered a **mixture of chi-squares**.
+
+### Example: testing a random intercept (single variance)
+
+Null hypothesis: no between-cluster variability / heterogeneity
+
+Test $H_0: \tau_{00} = 0$ vs $H_1: \tau_{00} > 0$.
+
+Fit both models by **ML** (not REML)  
+
+```{r}
+#| label: lrt_single_variance
+# H1: random intercept model
+mod1_ml <- lmer(score ~ age + (1 | group),
+                data = dta_grouped,
+                REML = FALSE)
+
+# H0: no random intercept (ordinary regression with group-ignored random part)
+mod0_ml <- gls(score ~ age, data = dta_grouped)
+
+# Put on a comparable ML deviance scale
+logLik_mod1 <- logLik(mod1_ml)
+logLik_mod0 <- logLik(mod0_ml)
+
+LR_stat <- 2 * (as.numeric(logLik_mod1) - as.numeric(logLik_mod0))
+```
+
+The Likelihood Ratio test statistics is computed
+
+```{r}
+#| eval: false
+#| echo: true
+LR_stat <- 2 * (as.numeric(logLik_mod1) - as.numeric(logLik_mod0))
+```
+
+Under $H_0$, the variance component is on the boundary ($\tau_{00} = 0$),  the LRT does **not** follow $\chi^2_1$, but rather a **mixture** of chi-square distributions:
+
+$\frac{1}{2} \chi^2_0 + \frac{1}{2} \chi^2_1$
+
+where $\chi^2_0$ is a point mass at 0.  
+
+This leads to a simple p-value adjustment: take half !
+
+Evaluate the Likelihood ratio test statistics:
+
+$p = 0.5 \cdot P(\chi^2_1 \ge \text{LR})$
+
+```{r}
+#| eval: false
+#| label: lrt_single_variance_pvalue
+# mixture 0.5 * chi^2_0 + 0.5 * chi^2_1
+p_mix <- 0.5 * (1 - pchisq(LR_stat, df = 1))
+p_naive <- 1 - pchisq(LR_stat, df = 1)
+
+c(LR = LR_stat,
+  p_mixture = p_mix,
+  p_naive_chisq1 = p_naive)
+```
+
+### Beyond a single variance
+
+Testing more complex hypothesis,  
+about multiple variances and/or covariances
+
+- e.g., testing a **random slope variance**
+- e.g., testing a **variance and a covariance simultaneously**
+
+asymptotic LRT distribution remains **finite mixture of chi-squared distributions**,  
+with **degrees of freedom** and **weights** in the mixture depend on 
+
+  - number of constrained variance and covariance parameters
+  - structure of the covariance matrix $H_0$ and $H_1$
+
+More complex models require simulation.
+
+Note: testing covariance is not a challenge
+
+```{r}
+save.image('zenzi.RData')
+```

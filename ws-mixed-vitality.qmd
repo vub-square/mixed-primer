@@ -1,0 +1,155 @@
+---
+title: "Mixed Models: a Primer"
+subtitle: "About how to analyze clustered data"
+date: today
+published-title: "Rendered"
+---
+
+```{r}
+#| label: packages
+pckgs <- c('tidyverse', 'scales', 'gt', 'broom','lme4','nlme','knitr','patchwork','broom.mixed','lmerTest','emmeans')
+donotshow <- purrr::map(pckgs, library, character.only = TRUE)
+select <- dplyr::select
+
+options(pillar.sigfig = 4, pillar.neg = "zigzag")
+```
+
+```{r}
+#| label: my_functions
+tidy_gt <- function(model, type = c("summary", "anova"), decimals = 3, ...) {
+  type <- match.arg(type)
+  
+  if (type == "summary") {
+    out <- tidy(model, ...)
+    gt(out) |>
+      fmt_number(columns = c(estimate, std.error, statistic), decimals = decimals) |>
+      fmt_scientific(columns = p.value) |>
+      cols_label(
+        term = "Term",
+        estimate = "Estimate", 
+        std.error = "Std. Error",
+        statistic = "t value",
+        p.value = "p value"
+      ) |>
+      tab_options(table.font.size = 14)
+      
+  } else {
+    out <- tidy(anova(model), ...)
+    gt(out) |>
+      fmt_number(
+        columns = c(df, sumsq, meansq, statistic), 
+        decimals = decimals
+      ) |>
+      fmt_scientific(columns = p.value) |>
+      cols_label(
+        term = "Term",
+        df = "df",
+        sumsq = "Sum Sq",
+        meansq = "Mean Sq",
+        statistic = "F value",
+        p.value = "p value"
+      ) |>
+      tab_options(table.font.size = 14)
+  }
+}
+glance_gt <- function(model, decimals = 3, ...) {
+  glance(model, ...) |> 
+    gt() |> 
+    fmt_number(decimals = decimals) |> 
+    cols_label(
+      r.squared = html("R²"),
+      adj.r.squared = html("adj. R²"),
+      sigma = "σ",
+      AIC = "AIC", BIC = "BIC",
+      logLik = "logLik"
+    ) |> 
+    tab_options(table.font.size = 14)
+}
+tidy_mixed_gt <- function(model, ...) {
+  broom.mixed::tidy(model, ...) |>
+    mutate(across(where(is.numeric), \(x) round(x, 4))) |>
+    gt() |>
+    tab_options(table.font.size = 13)
+}
+
+glance_mixed_gt <- function(model) {
+  broom.mixed::glance(model) |>
+    mutate(across(where(is.numeric), \(x) round(x, 3))) |>
+    gt() |>
+    tab_options(table.font.size = 13)
+}
+
+```
+
+```{r}
+#| label: default_theme
+theme_lmm <- function(base_size = 11) {
+  theme_minimal(base_size = base_size) +
+    theme(
+      plot.title    = element_text(size = 16, face = "bold", margin = margin(b = 6)),
+      plot.subtitle = element_text(size = 14, color = "#555", margin = margin(b = 10)),
+      axis.title    = element_text(size = 14),
+      axis.text.x   = element_text(size = 10),
+      axis.text.y   = element_text(size = 10),
+      axis.line     = element_line(color = "black"),
+      panel.grid.minor = element_blank(),
+      panel.grid.major = element_line(color = "#efefef"),
+      legend.position  = "bottom",
+      legend.title     = element_text(size = 14),
+      legend.text      = element_text(size = 14),
+      strip.text       = element_text(face = "bold", size = 12)
+    )
+}
+theme_set(theme_lmm())
+```
+
+::: {.callout-note appearance="simple"}
+**Vitality turns Mixed**
+
+- Aim: develop intuition for mixed models  
+
+&nbsp;
+
+- Focus on
+    - equations (building blocks)
+    - visualizations
+:::
+
+```{r}
+load('zenzi.RData')
+```
+
+# Context {.unlisted .unnumbered} 
+
+Long History
+
+- 1950: Henderson equations define mixed model
+- 1982: Laird and Ware model allows modeling growth trajectories
+- 1990: SAS PROC MIXED makes it possible for us, now in all major software
+
+Added Value
+
+- MANOVA made flexible and efficient
+- Extends regression; modeling dependencies
+
+
+{{< include ws-mixed-0-prep.qmd >}}
+{{< include ws-mixed-1-regress.qmd >}}
+{{< include ws-mixed-2-cluster.qmd >}}
+{{< include ws-mixed-3-model.qmd >}}
+{{< include ws-mixed-4-pooling.qmd >}}
+{{< include ws-mixed-5-slope.qmd >}}
+{{< include ws-mixed-6-higher.qmd >}}
+{{< include ws-mixed-7-longitudinal.qmd >}}
+{{< include ws-mixed-9-finalize.qmd >}}
+
+<!--
+
+
+-->
+
+
+
+```{r}
+save.image('zenzi.RData')
+```

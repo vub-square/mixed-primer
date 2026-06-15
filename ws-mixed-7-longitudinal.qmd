@@ -1,0 +1,567 @@
+# Longitudinal Data
+
+When clustering is because of repeated measurements over time:
+
+- same mixed model dependencies arise within units 
+- but **time is ordered**.
+- temporal structure: measurements closer in time could be more similar
+
+We now re-interpret the two levels:
+
+- **Level 1**: observations (at different time points), within patient
+- **Level 2**: patient
+
+The random effects shape individual **trajectories**.
+
+```{r}
+dta_timed <- dta_grouped |> group_by(group) |> arrange(age) |> mutate(time=age,timec=factor(1:n())) |> select(-age) |> ungroup()
+set.seed(123)
+.devs <- abs(rnorm(9,0,.5))
+.res <- rnorm(64,0,2)
+dta_timed <- dta_timed |> mutate(score_x = score + .devs[group]*time + .res)
+# maybe x2 not required
+dta_timed_x2 <- dta_grouped_x2 |> group_by(group) |> mutate(time=age,timec=1:n()) |> select(-age)
+set.seed(321)
+dta_timed_x2 <- dta_timed_x2 |> mutate(score=score+rnorm(n(),0,2))
+dta_timed_x2 <- dta_timed_x2 |>
+  mutate(time_c = scale(time, center = TRUE, scale = FALSE))
+```
+
+## Categorical and Continuous Time Scale  {data-toc-title="Time Scales"}
+
+Time within mixed models
+
+- does not require 
+  - equidistance
+  - fixed timepoints
+- can be categorical (ordinal) or continuous (numeric)
+
+**Choose continuous** when:
+
+- time is meaningful numerically; time elapsed is a driver
+- trajectories behave smooth over time
+
+**Choose categorical** when:
+
+- time is not fully meaningful numerically
+  - order can be a driver
+  - trajectories change in nature (data generating process) 
+  - e.g., pre-post, 3m, 6m, 12m
+
+```{r}
+#| label: prep_fig_continuous_trajectories
+#| echo: false
+plt_cnt_time <- ggplot(dta_timed, aes(x=time, y=score, group = group, color = group)) +
+  geom_smooth(method='lm', se=FALSE) +
+  geom_line(alpha=.5) +
+  geom_point(size = 2.5) +
+  scale_color_manual(
+    values = ifelse(levels(dta_timed$group) == "5", "red", "black")
+  ) +
+  guides(color = "none")
+```
+
+```{r}
+#| label: prep_fig_categorical_trajectories
+#| echo: false
+plt_cat_time <- ggplot(dta_timed, aes(x=timec, y=score, group = group, color = group)) +
+  geom_smooth(method='lm', se=FALSE) +
+  geom_line(alpha=.5) +
+  geom_point(size = 2.5) +
+  scale_color_manual(
+    values = ifelse(levels(dta_timed$group) == "5", "red", "black")
+  ) +
+  guides(color = "none")
+```
+
+```{r}
+#| label: fig-categorical_continuous
+#| fig-cap: "Time Scales: Continuous vs Categorical"
+#| fig-height: 5.5
+#| fig-width: 12
+#| echo: false
+wrap_plots(plt_cnt_time, plt_cat_time, nrow=1)
+```
+
+## The Longitudinal Random Intercept Model  {data-toc-title="Random Intercept"}
+
+The simplest longitudinal model
+
+- individuals start at different baselines
+- change at the same average rate
+- just a random intercept model with time as predictor
+- correlation within clusters, independent of time difference
+
+::: {.equation-box}
+$$
+y_{it} = \underbrace{(\gamma_{00} + u_{0i})}_{\text{person-specific intercept}} + \underline{\gamma_{10} \cdot \text{time}_{it}} + \varepsilon_{it}
+$$
+
+with:
+$$
+u_{0i} \sim \mathcal{N}(0,\ \tau_{00}), \qquad \varepsilon_{it} \sim \mathcal{N}(0,\ \sigma^2)
+$$
+:::
+
+
+The model fit now uses time as fixed variable to capture the average change,  
+while accomodating a constant covariance between residuals remaining.
+
+```{r}
+#| label: long_ri_9_prep
+dta_timed_x <- dta_timed |> mutate(score=score_x)
+```
+
+```{r}
+#| label: long_ri_9
+#| echo: true
+#| fig-height: 7
+#| fig-width: 10
+lmert_int_9 <- lmer(score ~ time + (1 | group), data = dta_timed_x)
+```
+
+```{r}
+#| label: prep_fig_random_intercept_time
+#| fig-height: 5.5
+#| fig-width: 5
+# lmert_int_9 <- lmer(score ~ time + (1 + time | group), data = dta_timed)
+pltdta_ri_time <- augment(lmert_int_9, data = dta_timed_x) # |>  mutate(group = factor(group))
+
+ranefs_df <- ranef(lmert_int_9)$group |>
+  as_tibble(rownames = "group") |>
+  mutate(group = factor(group))
+
+# Create group-specific fitted lines (same slope, different intercepts)
+pred_data_groups <- ranefs_df |>
+  select(group, `(Intercept)`) |>
+  crossing(
+    time = seq(
+      min(pltdta_ri_time$time, na.rm = TRUE),
+      max(pltdta_ri_time$time, na.rm = TRUE),
+      length.out = 200
+    )
+  ) |>
+  mutate(
+    fitted = fixef(lmert_int_9)[["(Intercept)"]] +
+             `(Intercept)` +
+             fixef(lmert_int_9)[["time"]] * time
+  )
+
+# Population-level fixed effect line
+pred_data_pop <- tibble(
+  time = seq(
+    min(pltdta_ri_time$time, na.rm = TRUE),
+    max(pltdta_ri_time$time, na.rm = TRUE),
+    length.out = 200
+  )
+) |>
+  mutate(
+    fitted = fixef(lmert_int_9)[["(Intercept)"]] +
+             fixef(lmert_int_9)[["time"]] * time
+  )
+
+time_stats <- pltdta_ri_time |>
+  summarise(
+    mean_score = mean(score, na.rm = TRUE),
+    se_mean = sd(score, na.rm = TRUE) / sqrt(sum(!is.na(score)))
+  )
+
+n_groups <- nlevels(pltdta_ri_time$group)
+#group_grays_9 <- gray.colors(n_groups, start = 0.25, end = 0.85)
+#col2 <- "#5B8FA8"
+```
+
+```{r}
+#| label: fig-random_intercept_time
+#| fig-cap: "Random intercept over time"
+#| fig-height: 5.5
+#| fig-width: 5
+ggplot(pltdta_ri_time, aes(x = time, y = score)) +
+  geom_point(
+    aes(color = group),
+    size = 2.5,
+    alpha = 0.85
+  ) +
+  scale_color_manual(values = group_grays_9, guide = "none") +
+  geom_segment(
+    aes(x = time, xend = time, y = score, yend = .fitted),
+    color = "gray60",
+    alpha = 0.30,
+    linewidth = 0.8
+  ) +
+  geom_line(
+    data = pred_data_pop,
+    aes(x = time, y = fitted),
+    inherit.aes = FALSE,
+    color = "black",
+    linewidth = 1.2
+  ) +
+ geom_line(
+    data = pred_data_groups,
+    aes(x = time, y = fitted, group = group, color = group),
+    linewidth = 0.9,
+    alpha = 0.7
+  ) +
+  annotate(
+    "text",
+    x = mean(pltdta_ri_time$time, na.rm = TRUE),
+    y = max(pltdta_ri_time$score, na.rm = TRUE) + 0.5,
+    label = paste0(
+      "score ≈ ",
+      round(fixef(lmert_int_9)[["(Intercept)"]], 2),
+      " + ",
+      round(fixef(lmert_int_9)[["time"]], 3),
+      " × time + random intercept(group)"
+    ),
+    size = 4.3
+  ) +
+  labs(
+    x = "Time (continuous)",
+    y = "Score",
+    title = "Random Intercept Model",
+    subtitle = "Parallel group lines: same slope, different intercepts"
+  ) +
+  theme_lmm() +
+  theme(
+    plot.title = element_text(face = "bold"),
+    plot.subtitle = element_text(size = 11, color = "gray40"),
+    panel.grid.minor = element_blank()
+  ) +
+  coord_cartesian(
+    xlim = c(
+      min(pltdta_ri_time$time, na.rm = TRUE),
+      max(pltdta_ri_time$time, na.rm = TRUE) + 0.12 * diff(range(pltdta_ri_time$time, na.rm = TRUE))
+    )
+  )
+```
+
+
+### Categorical Time
+
+With 4 time points (**T0, T3, T6, T9**), we can compare scores in two ways:
+
+1. **Consecutive timepoints**: T3 vs T0, T6 vs T3, T9 vs T6 (differences between adjacent times)
+2. **All vs reference**: T3 vs T0, T6 vs T0, T9 vs T0 (all times compared to baseline)
+
+```{r}
+#| label: setup_categorical_time
+dta_timed_c <- dta_timed |> filter(timec %in% c(1,2,3,4))
+
+dta_timed_c$timec <- factor(dta_timed_c$timec, labels = c("T0", "T3", "T6", "T9"), levels = c(1, 2, 3, 4))
+```
+
+Expected marginal means used to extract contrasts from a fitted model:
+
+```{r}
+#| label: emmeans_setup
+model_em <- lmer(score ~ timec + (1 | group), data = dta_timed_c)
+```
+
+All vs Reference (T0)
+
+```{r}
+#| label: emmeans_all_vs_ref
+em_all_vs_ref <- emmeans(model_em, specs = "timec")
+tidy(em_all_vs_ref)
+tidy(contrast(em_all_vs_ref, method = "trt.vs.ctrl", ref = 1))
+```
+
+Consecutive Comparisons
+
+```{r}
+#| label: emmeans_consecutive
+tidy(contrast(em_all_vs_ref, method = "consec"))
+```
+
+All Pairwise Comparisons
+
+```{r}
+#| label: emmeans_pairwise
+contrast(em_all_vs_ref, method = "pairwise")
+```
+
+Custom Comparisons can address specific research questions,  
+E.g., T9 vs avg(T3, T6) uses contrast parameters 0, -0.5, -0.5, 1
+
+```{r}
+contrast(em_all_vs_ref, method = list('T9 - (T6+T3)/2'=c(0, -0.5, -0.5, 1)))
+```
+
+## The Longitudinal Random Intercept - Random Slope Model  {data-toc-title="Random Slope"}
+
+Heterogeneity can exist over intercept, but also over slopes
+
+- individuals differ in slope
+- with an average slope, and an individual specific difference from that average
+- time as fixed and random effect
+
+For longitudinal data, individuals can differ in their average but also in their change over time.
+
+::: {.equation-box}
+$$
+y_{it} = (\gamma_{00} + u_{0i}) + (\gamma_{10} + u_{1i}) * \text{time}_{it} + \varepsilon_{it}
+$$
+
+with:
+$$
+\begin{pmatrix} u_{0i} \\ u_{1i} \end{pmatrix} \sim \mathcal{N}\!\left(\mathbf{0},\ \begin{pmatrix} \tau_{00} & \tau_{01} \\ \tau_{01} & \tau_{11} \end{pmatrix}\right), \qquad \varepsilon_{it} \sim \mathcal{N}(0,\ \sigma^2)
+$$
+:::
+
+The covariance $\tau_{01}$ is often negative, starting higher results in stronger decrease, or starting lower in stronger increase.
+
+Again: To avoid convergence issues you should center the random slope to reduce colinearity with the intercept.
+
+```{r}
+#| label: long_rs_9
+#| echo: true
+lmert_slp_9 <- lmer(score ~ time + (1 + time | group), data = dta_timed_x)
+```
+
+```{r}
+#| label: long_rs_9_sum
+tidy_gt(lmert_slp_9)
+```
+
+```{r}
+#| label: prep_fig_random_slope_time
+#| fig-height: 5.5
+#| fig-width: 5
+# lmert_int_9 <- lmer(score ~ time + (1 + time | group), data = dta_timed)
+pltdta_rs_time <- augment(lmert_slp_9, data = dta_timed_x) # |>  mutate(group = factor(group))
+
+ranefs_df <- ranef(lmert_slp_9)$group |>
+  as_tibble(rownames = "group") |>
+  mutate(group = factor(group))
+
+# Create group-specific fitted lines (same slope, different intercepts)
+pred_data_groups <- ranefs_df |>
+  select(group, `(Intercept)`, rtime = `time`) |>
+  crossing(
+    time = seq(
+      min(pltdta_rs_time$time, na.rm = TRUE),
+      max(pltdta_rs_time$time, na.rm = TRUE),
+      length.out = 200
+    )
+  ) |>
+  mutate(
+    fitted = fixef(lmert_slp_9)[["(Intercept)"]] +
+             `(Intercept)` +
+             (fixef(lmert_slp_9)[["time"]] + rtime)* time
+  )
+
+# Population-level fixed effect line
+pred_data_pop <- tibble(
+  time = seq(
+    min(pltdta_rs_time$time, na.rm = TRUE),
+    max(pltdta_rs_time$time, na.rm = TRUE),
+    length.out = 200
+  )
+) |>
+  mutate(
+    fitted = fixef(lmert_slp_9)[["(Intercept)"]] +
+             fixef(lmert_slp_9)[["time"]] * time
+  )
+
+time_stats <- pltdta_rs_time |>
+  summarise(
+    mean_score = mean(score, na.rm = TRUE),
+    se_mean = sd(score, na.rm = TRUE) / sqrt(sum(!is.na(score)))
+  )
+
+n_groups <- nlevels(pltdta_rs_time$group)
+#group_grays_9 <- gray.colors(n_groups, start = 0.25, end = 0.85)
+#col2 <- "#5B8FA8"
+```
+
+```{r}
+#| label: fig-random_slope_time
+#| fig-cap: "Random slope model over time"
+#| fig-height: 5.5
+#| fig-width: 5
+ggplot(pltdta_rs_time, aes(x = time, y = score)) +
+  geom_point(
+    aes(color = group),
+    size = 2.5,
+    alpha = 0.85
+  ) +
+  scale_color_manual(values = group_grays_9, guide = "none") +
+  geom_segment(
+    aes(x = time, xend = time, y = score, yend = .fitted),
+    color = "gray60",
+    alpha = 0.30,
+    linewidth = 0.8
+  ) +
+  geom_line(
+    data = pred_data_pop,
+    aes(x = time, y = fitted),
+    inherit.aes = FALSE,
+    color = "black",
+    linewidth = 1.2
+  ) +
+ geom_line(
+    data = pred_data_groups,
+    aes(x = time, y = fitted, group = group, color = group),
+    linewidth = 0.9,
+    alpha = 0.7
+  ) +
+  annotate(
+    "text",
+    x = mean(pltdta_rs_time$time, na.rm = TRUE),
+    y = max(pltdta_rs_time$score, na.rm = TRUE) + 0.5,
+    label = paste0(
+      "score ≈ ",
+      round(fixef(lmert_slp_9)[["(Intercept)"]], 2),
+      " + ",
+      round(fixef(lmert_slp_9)[["time"]], 3),
+      " × time + random effects(group)"
+    ),
+    size = 4.3
+  ) +
+  labs(
+    x = "Time (continuous)",
+    y = "Score",
+    title = "Random Intercept, Random Slope Model",
+    subtitle = "Non-parallel group lines: different slopes, different intercepts"
+  ) +
+  theme_lmm() +
+  theme(
+    plot.title = element_text(face = "bold"),
+    plot.subtitle = element_text(size = 11, color = "gray40"),
+    panel.grid.minor = element_blank()
+  ) +
+  coord_cartesian(
+    xlim = c(
+      min(pltdta_rs_time$time, na.rm = TRUE),
+      max(pltdta_rs_time$time, na.rm = TRUE) + 0.12 * diff(range(pltdta_rs_time$time, na.rm = TRUE))
+    )
+  )
+```
+
+# Covariance Structures
+
+Whithin cluster correlational structures:
+
+- correlation same for all pairs
+- correlation different for all pairs
+- correlation structured (in between the above)
+
+Choose **covariance structure** for the outcome vector $\mathbf{y}_i$ of patient $i$.
+
+Note: covariance structures 
+
+- implied by the variance-covariance estimated
+- specified as a repeated measures structure (residual covariance).
+
+For $T = 4$ time points, the covariance matrix $\boldsymbol{\Sigma}_i$ is 5×5. 
+
+## Most Common Structures {data-toc-title="Examples"}
+
+### Compound Symmetry (CS)
+
+All variances equal; all covariances equal regardless of time lag.
+
+$$
+\boldsymbol{\Sigma}_{\text{CS}} =
+\begin{pmatrix}
+\sigma^2 & \rho\sigma^2 & \rho\sigma^2 & \rho\sigma^2 \\
+\rho\sigma^2 & \sigma^2 & \rho\sigma^2 & \rho\sigma^2 \\
+\rho\sigma^2 & \rho\sigma^2 & \sigma^2 & \rho\sigma^2 \\
+\rho\sigma^2 & \rho\sigma^2 & \rho\sigma^2 & \sigma^2
+\end{pmatrix}
+$$
+
+**This is exactly what a random intercept model implies.** Two parameters: $\sigma^2$ and $\rho$.
+
+Note: this is often used for clustered data, not necessarily repeated measurements.
+
+### Unstructured (UN)
+
+No constraints — every variance and every covariance is estimated freely. For $T$ time points: $T(T+1)/2$ parameters. Most flexible, but most expensive in terms of parameters.
+
+$$
+\boldsymbol{\Sigma}_{\text{Unstructured}} =
+\begin{pmatrix}
+\sigma_1^2 & \sigma_{12} & \sigma_{13} & \sigma_{14} \\
+\sigma_{12} & \sigma_2^2 & \sigma_{23} & \sigma_{24} \\
+\sigma_{13} & \sigma_{23} & \sigma_3^2 & \sigma_{34} \\
+\sigma_{14} & \sigma_{24} & \sigma_{34} & \sigma_4^2
+\end{pmatrix}
+$$
+
+### Heterogeneous Compound Symmetry (CSH)
+
+Like CS, but allows variances to differ across time points. Useful when variability grows over follow-up.
+
+$$
+\boldsymbol{\Sigma}_{\text{CSH}} =
+\begin{pmatrix}
+\sigma_1^2 & \rho\,\sigma_1\sigma_2 & \rho\,\sigma_1\sigma_3 & \rho\,\sigma_1\sigma_4 \\
+\rho\,\sigma_1\sigma_2 & \sigma_2^2 & \rho\,\sigma_2\sigma_3 & \rho\,\sigma_2\sigma_4 \\
+\rho\,\sigma_1\sigma_3 & \rho\,\sigma_2\sigma_3 & \sigma_3^2 & \rho\,\sigma_3\sigma_4 \\
+\rho\,\sigma_1\sigma_4 & \rho\,\sigma_2\sigma_4 & \rho\,\sigma_3\sigma_4 & \sigma_4^2
+\end{pmatrix}
+$$
+
+### Autoregressive Order 1 — AR(1)
+
+Correlation decays exponentially with lag: $\text{Corr}(y_t, y_{t+k}) = \rho^k$.
+
+$$
+\boldsymbol{\Sigma}_{\text{AR(1)}} =
+\sigma^2
+\begin{pmatrix}
+1 & \rho & \rho^2 & \rho^3 \\
+\rho & 1 & \rho & \rho^2 \\
+\rho^2 & \rho & 1 & \rho \\
+\rho^3 & \rho^2 & \rho & 1
+\end{pmatrix}
+$$
+
+Two parameters: $\sigma^2$ and $\rho$. Natural for equally-spaced measurements with decaying memory.
+
+### Heterogeneous AR(1)
+
+Allow the variances to change over time.
+
+$$
+\boldsymbol{\Sigma}_{\text{ARH(1)}} =
+\begin{pmatrix}
+\sigma_1^2 & \rho\,\sigma_1\sigma_2 & \rho^2\,\sigma_1\sigma_3 & \rho^3\,\sigma_1\sigma_4 \\
+\rho\,\sigma_1\sigma_2 & \sigma_2^2 & \rho\,\sigma_2\sigma_3 & \rho^2\,\sigma_2\sigma_4 \\
+\rho^2\,\sigma_1\sigma_3 & \rho\,\sigma_2\sigma_3 & \sigma_3^2 & \rho\,\sigma_3\sigma_4 \\
+\rho^3\,\sigma_1\sigma_4 & \rho^2\,\sigma_2\sigma_4 & \rho\,\sigma_3\sigma_4 & \sigma_4^2
+\end{pmatrix}
+$$
+
+### Toeplitz
+
+Correlations depend only on the lag, but without the exponential constraint of AR(1). Each lag distance has its own parameter. More flexible than AR(1), fewer parameters than unstructured.
+
+$$
+\boldsymbol{\Sigma}_{\text{Toeplitz}} =
+\begin{pmatrix}
+\tau_0 & \tau_1 & \tau_2 & \tau_3 \\
+\tau_1 & \tau_0 & \tau_1 & \tau_2 \\
+\tau_2 & \tau_1 & \tau_0 & \tau_1 \\
+\tau_3 & \tau_2 & \tau_1 & \tau_0
+\end{pmatrix}
+$$
+
+### 6. ...
+
+Various others exist, choose 
+
+- most efficient
+- captures the assumed process
+  - continuous or not, equidistant or not ?
+- is in line with the data
+  - choose based on AIC or BIC (fitted with ML)
+
+
+```{r}
+save.image('zenzi.RData')
+```
+
+
+

@@ -1,0 +1,683 @@
+# Dependent data
+
+Data is often internally dependent:
+
+- cross-sectional clustering: groups of observations (classes, litters, clinics, ...)
+- within-unit clustering: repeated measures (trajectories, pre-post, ...)
+- distances (less relation when further)
+- study effects measuring the same (meta-analysis)
+- spatial random effects
+- item response models, with respondent clustering
+- ...
+
+What dependency looks like:
+
+```{r}
+#| label: dta_group9_by_residuals_and_random
+# lm_cont <- lm(score ~ age, data = dta_cont) # use dta_cont, dta_grouped
+pltdta_cont <- dta_cont
+pltdta_cont$resid <- residuals(lm_cont)
+dta_sorted <- pltdta_cont[order(-pltdta_cont$resid), ]
+dta_sorted$group <- factor(rep(1:9, times = c(4, 4, 8, 8, 16, 8, 8, 4, 4)))
+dta_grouped <- dta_sorted[order(dta_sorted$id), ]
+set.seed(123)
+dta_grouped$group0 <- factor(sample(c(rep(c(1,2,8,9),4),rep(c(3,4,6,7),8),rep(5,16))))
+#summary(lme4::lmer(score ~ age + (1 | group), data = dta_grouped))
+#summary(lme4::lmer(score ~ age + (1 | group0), data = dta_grouped))
+```
+
+```{r}
+#| label: lm_add_residuals
+pltdta_grouped <- dta_grouped
+lm_naive_9 <- lm(score ~ age, data = pltdta_grouped)
+pltdta_grouped$fitted_naive <- fitted(lm_naive_9)
+pltdta_grouped$resid_naive <- residuals(lm_naive_9)
+```
+
+```{r}
+#| label: prep_fig_resid_no_iid
+#| fig-height: 5.5
+#| fig-width: 5
+plt_resid_naive <- ggplot(pltdta_grouped, aes(fitted_naive, resid_naive))  +
+  geom_text(aes(label = group,
+    colour = factor(group %in% c(1,9), 
+      levels = c(FALSE, TRUE),
+      labels = c("other", "1"))),
+      size = 4) +
+  scale_color_manual(values = c("other" = "grey70", "1" = "red"), guide = "none") +
+  geom_hline(yintercept=0,lty=2,color="red") +
+  labs(title="Unaccounted for Groups") + ylim(c(-4,4))
+```
+
+
+```{r}
+#| label: lm_group_main_add_residuals
+lm_group_main_9 <- lm(score ~ age + group, data = pltdta_grouped)
+pltdta_grouped$fitted_group_main <- fitted(lm_group_main_9)
+pltdta_grouped$resid_group_main <- residuals(lm_group_main_9)
+```
+
+```{r}
+#| label: prep_fig_resid_iid
+#| fig-cap: "Accounting for groups"
+#| fig-height: 5.5
+#| fig-width: 5
+plt_resid_group <- ggplot(pltdta_grouped, aes(fitted_group_main, resid_group_main)) +
+  geom_text(aes(label = group,
+    colour = factor(group %in% c(1,9), 
+      levels = c(FALSE, TRUE),
+      labels = c("other", "1"))),
+      size = 4) +
+  scale_color_manual(values = c("other" = "grey70", "1" = "red"), guide = "none") +
+  geom_hline(yintercept=0,lty=2,color="red") +
+  labs(title="Accounted for Groups") + ylim(c(-4,4)) 
+```
+
+```{r}
+#| label: fig-grouping_yes_no
+#| fig-cap: "Accounting for Grouping"
+#| fig-height: 5.5
+#| fig-width: 10
+wrap_plots(plt_resid_naive,plt_resid_group, nrow=1)
+```
+
+Note the assumption
+
+$$
+\varepsilon_i \overset{\text{i.i.d.}}{\sim} \mathcal{N}(0, \sigma^2).
+$$
+
+All residuals (variance unaccounted for by the model) assumed distributed individually and identically,  
+all part of the same underlying distribution !
+
+Any residual is fully uninformative about any other residual.
+All residuals combined reflect one single distribution.
+
+The clustering shows that grouping should be included in the model.  
+
+## Working Example {data-toc-title="Example"}
+
+Let's assume a SQUARE test exists
+
+- with test results between 0 and 20
+- performed on patients
+- **part of one of 9 groups of patients**
+- who have particular characteristics (e.g., age, ...)
+- under particular conditions (e.g., treated or not)
+
+We want to understand the conditions (e.g., treatment) under which test results are higher/lower
+
+- **acknowledging group-members to be more similar to each-other, in average**
+- by relating 
+  - the data (test results ~ outcome) to 
+  - the conditions (patient properties ~ predictors) 
+  - &rarr; columns
+- using information offered by each of the patients (replications ~ sample size) 
+  - &rarr; rows
+
+## Regression Model: grouping as Fixed variable {data-toc-title="Grouping Fixed"}
+
+Bringing in groups
+
+- reduces residuals
+- results in residuals around 0 for each group
+- removed dependence: knowledge of an instance of a group is not informative about the other instances
+
+### Independent groups, common age effect
+
+:::: {.columns}
+
+Using a group identification variable to account for groups.
+
+The regression model is the same as before, 9 groups instead of 2:
+
+$$
+y_i = \beta_0 + \beta_1 x_i + \underline{\beta_2 g_i} + \varepsilon_i,
+\qquad \text{for } i = 1,\dots,n,
+$$
+
+with the usual distributional assumption:
+
+$$
+\varepsilon_i \overset{\text{i.i.d.}}{\sim} \mathcal{N}(0, \sigma^2).
+$$
+
+&nbsp;
+
+::: {.column width="50%" .light-grey-col}
+
+```{r}
+#| label: fig-cont9_model_independent
+#| fig-cap: "Grouping as Fixed Variable; Age effect considered equal over groups, high within group similarity"
+#| fig-height: 5.5
+#| fig-width: 10
+# use group_colors
+lm_group_main_9 <- lm(score ~ age + group, data = dta_grouped)
+cont9_stats <- dta_grouped |>
+  summarise(
+    mean_score = mean(score),
+    sd_score   = sd(score),
+    n          = n(),
+    se_mean    = sd(score) / sqrt(n()),
+    .groups    = "drop"
+  )
+
+pltdta_group_main <- augment(lm_group_main_9, data = dta_grouped) |> select(-c(resid)) |>
+  rename(fitted = .fitted, resid = .resid)
+
+names(group_colors_9) <- c(1,5,9,2,6,3,7,4,8)
+pred_data <- expand_grid(
+  age = seq(min(dta_grouped$age), max(dta_grouped$age), length.out = 20),
+  group = factor(1:9)
+)
+pred_data$fitted <- predict(lm_group_main_9, newdata = pred_data)
+
+pred_data$group_gray <- factor(pred_data$group, levels = unique(pred_data$group)[order(c(1,5,9,2,6,3,7,4,8))])
+
+plt_similarity_high <- ggplot(pltdta_group_main, aes(x = age, y = score)) +
+  geom_point(aes(color = group), size = 2.5, alpha = 0.85) +
+  scale_color_manual(values = group_grays_9, guide = "none") + 
+  geom_segment(
+    data = pltdta_group_main,
+    aes(x = age, xend = age, y = score, yend = fitted),
+    color = "gray60",
+    alpha = 0.3,
+    linewidth = 0.8
+  ) +
+  geom_line(
+    data = pred_data,
+    aes(y = fitted, color = group_gray),
+    linewidth = 1.2,
+    show.legend = FALSE
+  ) +
+  annotate(
+    "text",
+    x = mean(pltdta_group_main$age) ,
+    y = max(pltdta_group_main$score) + .5,
+    label = paste0(
+      "score ≈ ",
+      round(coef(lm_group_main_9)[1], 2),
+      " + ",
+      round(coef(lm_group_main_9)["age"], 3),
+      " × age + group effect"
+    ),
+    size = 4.5
+  ) +
+  labs(
+    x = "Age (continuous predictor)",
+    y = "Score (outcome)",
+    title = "Equal age effect for independent groups"
+  ) + 
+  coord_cartesian(ylim = c(10, 20)) 
+plt_similarity_high
+```
+
+:::
+
+::: {.column width="5%"}
+
+:::
+
+::: {.column width="45%"}
+
+Age effect, assumed equal for each of 9 groups.  
+
+Age on x-axis, observations on y-axis
+
+* lines represent group specific conditional averages
+  * in this case, conditional on age
+  * age effect, independent of group
+
+:::
+
+With nine groups in the model.
+
+```{r}
+#| label: lm_grouped_main
+#| echo: true
+lm_group_main_9 <- lm(score ~ age + group, data = dta_grouped)
+```
+
+```{r}
+#| label: tab-tidy_lm_grouped_main
+tidy_gt(lm_group_main_9)
+glance_gt(lm_group_main_9)
+```
+
+There is a clear age and group effect, each of the groups differs from the reference group conditional on age.  
+The Mean Squared Error is huge compared to the Residual Variance.
+
+```{r}
+#| label: tab-tidy_lm_grouped_main_anova
+tidy_gt(lm_group_main_9, type='anova')
+```
+
+::::
+
+### Group specific age effect
+
+:::: {.columns}
+
+What if we would allow group specific age effects.
+
+The regression model is:
+
+$$
+y_i = \beta_0 + \beta_1 \cdot x1_i + \beta_2 \cdot g2_i + \beta_3 \cdot x1_i \cdot g2_i + \varepsilon_i,
+\qquad \text{for } i = 1,\dots,n,
+$$
+
+with the usual distributional assumption:
+
+$$
+\varepsilon_i \overset{\text{i.i.d.}}{\sim} \mathcal{N}(0, \sigma^2).
+$$
+
+&nbsp;
+
+::: {.column width="50%" .light-grey-col}
+
+```{r}
+#| label: fig-cont9_model_independent_interaction
+#| fig-cap: "Grouping as Fixed Variable; Age effect allowed to be different over groups, high within group similarity"
+#| fig-height: 5.5
+#| fig-width: 10
+
+lm_group_int_9 <- lm(score ~ age * group, data = dta_grouped)
+
+pltdta_group_int <- augment(lm_group_int_9, data = select(dta_grouped, -resid)) |>
+  rename(fitted = .fitted, resid = .resid)
+
+names(group_colors_9) <- c(1,5,9,2,6,3,7,4,8)
+pred_data <- expand_grid(
+  age = seq(min(dta_grouped$age), max(dta_grouped$age), length.out = 20),
+  group = factor(1:9)
+)
+pred_data$fitted <- predict(lm_group_int_9, newdata = pred_data)
+
+pred_data$group_gray <- factor(pred_data$group, levels = unique(pred_data$group)[order(c(1,5,9,2,6,3,7,4,8))])
+
+ggplot(pltdta_group_int, aes(x = age, y = score)) +
+  geom_point(aes(color = group), size = 2.5, alpha = 0.85) +
+  scale_color_manual(values = group_grays_9, guide = "none") + 
+  geom_segment(
+    data = pltdta_group_int, 
+    aes(x = age, xend = age, y = score, yend = fitted),
+    color = "gray60",
+    alpha = 0.3,
+    linewidth = 0.8
+  ) +
+  geom_line(
+    data = pred_data,
+    aes(y = fitted, color = group_gray),
+    linewidth = 1.2,
+    show.legend = FALSE
+  ) +
+  annotate(
+    "text",
+    x = mean(pltdta_group_int$age) ,
+    y = max(pltdta_group_int$score) + .5,
+    label = paste0(
+      "score ≈ ",
+      round(coef(lm_group_int_9)[1], 2),
+      " + ",
+      round(coef(lm_group_int_9)["age"], 3),
+      " × age * group effect"
+    ),
+    size = 4.5
+  ) +
+  labs(
+    x = "Age (continuous predictor)",
+    y = "Score (outcome)",
+    title = "Different age effect for independent groups"
+  ) + 
+  coord_cartesian(ylim = c(10, 20)) 
+```
+
+:::
+
+::: {.column width="5%"}
+
+:::
+
+::: {.column width="45%"}
+
+The age effect is allowed to differ for each of 9 groups.  
+
+Age on x-axis, observations on y-axis
+
+* lines represent group specific conditional averages
+
+:::
+
+
+With nine group in the model.
+
+```{r}
+#| label: lm_grouped_interact
+#| echo: true
+lm_group_int_9 <- lm(score ~ age * group, data = dta_grouped)
+```
+
+```{r}
+#| label: tab-tidy_lm_grouped_interact
+tidy_gt(lm_group_int_9)
+glance_gt(lm_group_int_9)
+```
+
+There is a clear age and group effect, each of the groups differs from the reference group conditional on age.  
+The Mean Squared Error is huge compared to the Residual Variance.
+
+```{r}
+#| label: tab-tidy_lm_grouped_interact_anova
+tidy_gt(lm_group_int_9, type='anova')
+```
+
+::::
+
+## Regression Model: Why this sometimes is not enough {data-toc-title="Grouping Issues"}
+
+:::: {.columns}
+
+Grouping as fixed variable can be a problem,  
+especially with many small clusters (groups):
+
+- many parameters have to be estimated because many clusters
+- for each cluster, parameters poorly estimated when small clusters (overfitting)
+- no generalization to clusters not part of the data
+
+::: {.column width="50%" .light-grey-col}
+
+```{r}
+#| label: fig-lack_idd
+#| fig-cap: "Clustered Residuals"
+#| fig-height: 5.5
+#| fig-width: 7
+plt_resid_naive +
+  labs(title="Clustered Residuals") + 
+    ylim(c(-4,4)) + 
+    geom_text(aes(label = group,
+      colour = factor(group %in% c(1,9), 
+        levels = c(FALSE, TRUE),
+        labels = c("other", "1"))),
+        size = 4) +
+  scale_color_manual(values = c("other" = "grey70", "1" = "red"), guide = "none")
+```
+
+:::
+
+::: {.column width="5%"}
+
+:::
+
+::: {.column width="45%"}
+
+Ignoring grouping is a problem when within group similarities exist (dependencies):
+
+- violation of i.i.d. assumption
+- **Standard errors** are too small → p-values too small → false positives inflate.
+- group specific effects ignored too
+
+:::
+
+&nbsp;
+
+Solution: model the within group similarities,   
+once estimated the rest of the model is conditional upon it.
+
+::::
+
+## Note: within cluster similarity ~ between cluster difference {data-toc-title="Variance & Correlation"}
+
+Capture dependence through estimating variance.
+
+```{r}
+#| label: fig-cont9_model_independent_interaction_0
+#| fig-cap: "Grouping as Fixed Variable; low within group similarity"
+#| fig-height: 5.5
+#| fig-width: 10
+
+lm_group0_main_9 <- lm(score ~ age + group0, data = dta_grouped)
+
+pltdta_group0_main <- augment(lm_group0_main_9, data = select(dta_grouped, -resid)) |>
+  rename(fitted = .fitted, resid = .resid)
+
+names(group_colors_9) <- c(1,5,9,2,6,3,7,4,8)
+pred_data <- expand_grid(
+  age = seq(min(dta_grouped$age), max(dta_grouped$age), length.out = 20),
+  group0 = factor(1:9)
+)
+pred_data$fitted <- predict(lm_group0_main_9, newdata = pred_data)
+
+pred_data$group_gray <- factor(pred_data$group0, levels = unique(pred_data$group0)[order(c(1,5,9,2,6,3,7,4,8))])
+
+plt_similarity_low <- ggplot(pltdta_group0_main, aes(x = age, y = score)) +
+  geom_point(aes(color = group0), size = 2.5, alpha = 0.85) +
+  scale_color_manual(values = group_grays_9, guide = "none") + 
+  geom_segment(data = pltdta_group0_main,
+    aes(x = age, xend = age, y = score, yend = fitted),
+    color = "gray60",
+    alpha = 0.3,
+    linewidth = 0.8
+  ) +
+    geom_line(
+  data = pred_data,
+    aes(y = fitted, color = group_gray),
+    linewidth = 1.2,
+    show.legend = FALSE
+  ) +
+  annotate(
+  "text",
+    x = mean(pltdta_group0_main$age) ,
+    y = max(pltdta_group0_main$score) + .5,
+    label = paste0(
+      "score ≈ ",
+      round(coef(lm_group0_main_9)[1], 2),
+      " + ",
+      round(coef(lm_group0_main_9)["age"], 3),
+      " × age + group effect"
+    ),
+    size = 4.5
+  ) +
+    labs(
+    x = "Age (continuous predictor)",
+    y = "Score (outcome)",
+    title = "Age effect for independent groups with low within group similarity"
+  ) + 
+  coord_cartesian(ylim = c(10, 20)) 
+```
+
+```{r}
+#| label: fig-heterogeneity_similarity
+#| fig-cap: "Variance and Correlation, two sides of a coin"
+#| fig-height: 5.5
+#| fig-width: 10
+plt_similarity_high <- plt_similarity_high  +
+  labs(
+    x = "Age (continuous predictor)",
+    y = "Score (outcome)",
+    title = "High Similarity"
+  )
+plt_similarity_low <- plt_similarity_low  +
+  labs(
+    x = "Age (continuous predictor)",
+    y = "Score (outcome)",
+    title = "Low Similarity"
+  )
+wrap_plots(plt_similarity_high,plt_similarity_low, nrow=1)
+```
+
+<!--
+
+### Independent groups, low within group similarity
+
+:::: {.columns}
+
+What if groups do not differ as much.
+
+The regression model still is:
+
+$$
+y_i = \beta_0 + \beta_1 x1_i + \beta_1 g2_i + \beta_3 x1_i * g2_i + \varepsilon_i,
+\qquad \text{for } i = 1,\dots,n,
+$$
+
+with the usual distributional assumption:
+
+$$
+\varepsilon_i \overset{\text{i.i.d.}}{\sim} \mathcal{N}(0, \sigma^2).
+$$
+
+&nbsp;
+
+::: {.column width="50%" .light-grey-col}
+
+```{r}
+#| label: fig-cont9_model_independent_interaction_0_remove
+#| fig-cap: "Grouping as Fixed Variable; low within group similarity"
+#| fig-height: 5.5
+#| fig-width: 10
+
+lm_group0_main_9 <- lm(score ~ age + group0, data = dta_grouped)
+
+pltdta_group0_main <- augment(lm_group0_main_9, data = select(dta_grouped, -resid)) |>
+  rename(fitted = .fitted, resid = .resid)
+
+names(group_colors_9) <- c(1,5,9,2,6,3,7,4,8)
+pred_data <- expand_grid(
+  age = seq(min(dta_grouped$age), max(dta_grouped$age), length.out = 20),
+  group0 = factor(1:9)
+)
+pred_data$fitted <- predict(lm_group0_main_9, newdata = pred_data)
+
+pred_data$group_gray <- factor(pred_data$group0, levels = unique(pred_data$group0)[order(c(1,5,9,2,6,3,7,4,8))])
+
+plt_similarity_low <- ggplot(pltdta_group0_main, aes(x = age, y = score)) +
+  geom_point(aes(color = group0), size = 2.5, alpha = 0.85) +
+  scale_color_manual(values = group_grays_9, guide = "none") + 
+  geom_segment(data = pltdta_group0_main,
+    aes(x = age, xend = age, y = score, yend = fitted),
+    color = "gray60",
+    alpha = 0.3,
+    linewidth = 0.8
+  ) +
+    geom_line(
+  data = pred_data,
+    aes(y = fitted, color = group_gray),
+    linewidth = 1.2,
+    show.legend = FALSE
+  ) +
+    geom_rect(
+  data = data.frame(
+    xmin = max(pltdta_group0_main$age) + 0.5,
+      xmax = max(pltdta_group0_main$age) + 1,
+      ymin = cont9_stats$mean_score - cont9_stats$se_mean,
+      ymax = cont9_stats$mean_score + cont9_stats$se_mean
+    ),
+    aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
+    fill = col2,
+    alpha = 0.4,
+    color = "black",
+    linewidth = 0.5,
+    inherit.aes = FALSE
+  ) +
+    annotate(
+  "text",
+    x = max(pltdta_group0_main$age) - 1.2,
+    y = cont9_stats$mean_score + 0.4,
+    label = "SE",
+    color = col2,
+    hjust = -0.1,
+    size = 5
+  ) +
+    annotate(
+  "text",
+    x = mean(pltdta_group0_main$age) ,
+    y = max(pltdta_group0_main$score) + .5,
+    label = paste0(
+      "score ≈ ",
+      round(coef(lm_group0_main_9)[1], 2),
+      " + ",
+      round(coef(lm_group0_main_9)["age"], 3),
+      " × age + group effect"
+    ),
+    size = 4.5
+  ) +
+    labs(
+    x = "Age (continuous predictor)",
+    y = "Score (outcome)",
+    title = "Age effect for independent groups with low within group similarity"
+  ) + 
+  coord_cartesian(ylim = c(10, 20)) 
+plt_similarity_low
+```
+
+:::
+
+::: {.column width="5%"}
+
+:::
+
+::: {.column width="45%"}
+
+The age effect is allowed to differ for each of 9 groups.  
+
+Age on x-axis, observations on y-axis
+
+* lines represent group specific conditional averages
+
+:::
+
+
+With nine group in the model.
+
+```{r}
+#| label: lm_weak_grouped_interact_remove
+#| echo: true
+lm_group0_int_9 <- lm(score ~ age * group0, data = dta_grouped)
+```
+
+```{r}
+#| label: tab-tidy_lm_weak_grouped_interact_remove
+tidy_gt(lm_group0_int_9)
+glance_gt(lm_group0_int_9)
+```
+
+There is no evidence for an age or group effect.  
+The Mean Squared Error is small compared to the Residual Variance.
+
+```{r}
+#| label: tab-tidy_lm_weak_grouped_interact_anova_rmeove
+tidy_gt(lm_group0_int_9, type='anova')
+```
+
+Let's remove the interaction from the model.
+
+```{r}
+#| label: tab-lm_weak_grouped_main_remove
+#| echo: true
+lm_group0_main_9 <- lm(score ~ age + group0, data = dta_grouped)
+```
+
+```{r}
+#| label: tab-tidy_lm_weak_grouped_main_remove
+tidy_gt(lm_group0_main_9)
+glance_gt(lm_group0_main_9)
+```
+
+Now there is evidence for an age effect, because it is not linked to the reference group.  
+The group effect is still not present, and maybe can be removed.   
+The Mean Squared Error is small compared to the Residual Variance.
+
+```{r}
+#| label: tab-tidy_lm_weak_grouped_main_anova_remove
+tidy_gt(lm_group0_main_9, type='anova')
+```
+
+::::
+
+-->
+
+```{r}
+save.image('zenzi.RData')
+```
