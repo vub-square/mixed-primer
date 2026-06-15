@@ -1,0 +1,72 @@
+$black: #000;
+$white: #fff;
+$blue: #003f96;
+$orange: #f60;
+
+$body-bg: $white;
+$body-color: $black;
+$link-color: $orange;
+
+$input-bg: #208dd8;
+$popover-bg: #42affa;
+
+$font-size: 4rem;
+$font-size-authors: 1rem;
+$primary-color: $blue;
+$secondary-color: $orange;
+
+$font-family-sans-serif: "Freight Sans Pro", "Avantgarde", "Roboto", sans-serif;
+$font-family-monospace: "Courier", monospace;
+
+/*-- scss:defaults --*/
+
+/* Only variables here, if you want to override Bootstrap ones. */
+
+/*-- scss:rules --*/
+
+body {
+  font-family: $font-family-sans-serif;
+}
+
+code, pre, pre.sourceCode {
+  font-family: $font-family-monospace;
+}
+
+.quarto-title-block .quarto-title-banner {
+  background-image: url("_xtra/_hdr_logo.png");
+  background-size: 300px;
+  background-position: left;
+  background-repeat: no-repeat;
+  padding-left: 10px;
+  background-origin: content-box;
+}
+
+/* Use both possible class names depending on Quarto version */
+.quarto-margin-sidebar,
+.sidebar.toc-left,
+.sidebar.margin-sidebar {
+  top: 0px;
+  padding-top: 6em;
+  background-image: url("_xtra/_hdr_logo.png");
+  background-repeat: no-repeat;
+  background-position: top 20px left 0px;
+  background-size: contain;
+}
+
+.quarto-margin-sidebar .quarto-toc,
+.sidebar.margin-sidebar .quarto-toc {
+  text-align: right;
+}
+
+#quarto-margin-sidebar,
+.quarto-margin-sidebar {
+  max-width: 200px;
+}
+
+.callout.disclaimer {
+  border-left-color: #ff6600;
+}
+
+.callout.disclaimer.callout-style-default > .callout-header {
+  background-color: rgba(255, 102, 0, 0.1);  // light orange header
+}

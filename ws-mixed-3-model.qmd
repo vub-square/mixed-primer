@@ -320,7 +320,7 @@ dta_grouped_center <- dta_grouped |> group_by(group) |> mutate(agem=mean(age), a
 plt_center_within <- ggplot(data = dta_grouped_center, aes(x = agec, y = score)) +
   geom_point(alpha = 0.3) +
   geom_line(aes(group = group), alpha = 0.5) +
-  geom_smooth(aes(group = 1), method = "lm", se = FALSE, color = "blue", linewidth = 1) +  # pooled within-group slope
+  geom_smooth(aes(group = 1), method = "lm", se = FALSE, color = "blue", linewidth = 1) +
   labs(title = "Within-group (Level 1)", 
        x = "Age (centered within group)", 
        y = "Score") +
@@ -338,7 +338,7 @@ dta_group_means <- dta_grouped_center |>
 plt_center_between <- ggplot(data = dta_group_means, aes(x = group_ordered, y = score_mean)) +
   geom_point(size = 3) +
   geom_line(aes(group = 1), alpha = 0.5) +
-  geom_smooth(method = "lm", se = FALSE, color = "red", size = 1) +  # between-group slope
+  geom_smooth(method = "lm", se = FALSE, color = "red", linewidth = 1) + 
   labs(title = "Between-group (Level 2)", 
        x = "Group (ordered by mean age)", 
        y = "Mean Score") +

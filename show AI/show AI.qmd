@@ -1,0 +1,220 @@
+---
+title: "Mixed-Effects Model Analysis of Orthodont Data"
+author: "Statistical Analysis Example"
+date: "`r format Sys.Date() %Y-%m-%d`"
+format:
+  html:
+    theme: cosmi
+    toc: true
+---
+
+```{r}
+# Load required packages
+library(nlme)      # For Orthodont data and lme()
+library(lme4)      # For alternative lmer() implementation
+library(ggplot2)   # For visualization
+library(dplyr)     # For data manipulation
+```
+
+## 1. Data Overview
+
+The `Orthodont` dataset contains measurements of the distance between the pituitary and pterygomaxillary fissure (in mm) for 27 children, measured at 4 different ages (8, 10, 12, and 14 years). The data also includes sex information.
+
+```{r}
+# Load and examine the data
+data(Orthodont)
+cat("Dataset structure:\\n")
+str(Orthodont)
+cat("\\nNumber of observations:", nrow(Orthodont), "\\n")
+cat("Number of subjects:", length(unique(Orthodont$Subject)), "\\n")
+cat("Age range:", min(Orthodont$age), "-", max(Orthodont$age), "years\\n")
+cat("Sex distribution:\\n")
+table(Orthodont$Sex)
+```
+
+```{r}
+# Visualize the data
+ggplot(Orthodont, aes(x = age, y = distance, color = Sex, group = Subject)) +
+  geom_point(size = 2) +
+  geom_line(alpha = 0.5) +
+  stat_summary(fun = mean, geom = "point", size = 4, color = "black") +
+  stat_summary(fun = mean, geom = "line", size = 1.5, color = "black") +
+  labs(title = "Orthodont Distance by Age and Sex",
+       x = "Age (years)",
+       y = "Distance (mm)") +
+  theme_minimal()
+```
+
+## 2. Model Strategy
+
+We will fit a **full random intercept and random slope model** with:
+
+- **Fixed effects**: Age, Sex, and their interaction
+- **Random effects**: Random intercept and random slope for age by Subject (correlated)
+- **Correlation structure**: None (independent residuals within subjects)
+
+This is a more comprehensive model than the simple random intercept model.
+
+## 3. Full Mixed Model using `nlme::lme()`
+
+The model formula is:
+$$Y_{ij} = \beta_0 + \beta_1 \text{Age}_{ij} + \beta_2 \text{Sex}_{i} + \beta_3 \text{Age}_{ij} \times \text{Sex}_{i} + b_{0i} + b_{1i} \text{Age}_{ij} + \epsilon_{ij}$$
+
+where $b_{0i}$ (random intercept) and $b_{1i}$ (random slope) are correlated random effects for subject $i$.
+
+```{r}
+# Full mixed model with random intercept AND random slope (correlated)
+fm_full_nlme <- lme(
+  distance ~ age * Sex,              # Fixed effects: age, sex, interaction
+  random = pdSymm(Subject ~ age),    # Random: correlated intercept & slope for age
+  data = Orthodont,
+  method = "REML"                    # Restricted Maximum Likelihood
+)
+
+cat("Model Summary (nlme::lme):\\n")
+print(summary(fm_full_nlme))
+```
+
+```{r}
+# Model diagnostics
+cat("\\nResidual diagnostics:\\n")
+par(mfrow = c(2, 2))
+plot(fm_full_nlme)
+```
+
+## 4. Alternative Implementation using `lme4::lmer()`
+
+The same model can be fitted using the `lme4` package:
+
+```{r}
+fm_full_lme4 <- lmer(
+  distance ~ age * Sex + (1 + age | Subject),  # Same model structure
+  data = Orthodont,
+  REML = TRUE
+)
+
+cat("Model Summary (lme4::lmer):\\n")
+print(summary(fm_full_lme4))
+```
+
+## 5. Model Comparison
+
+Let's compare the full model with a simpler random-intercept-only model:
+
+```{r}
+# Random intercept only model
+fm_restricted <- lme(
+  distance ~ age * Sex,
+  random = ~ 1 | Subject,           # Only random intercept
+  data = Orthodont,
+  method = "REML"
+)
+
+# Likelihood ratio test
+anova(fm_restricted, fm_full_nlme)
+```
+
+The LR test evaluates whether the random slope significantly improves the model.
+
+## 6. Random Effects Interpretation
+
+```{r}
+# Extract and examine random effects
+cat("\\nRandom effects variance-covariance matrix:\\n")
+print(var(fm_full_nlme))
+
+cat("\\nRandom intercepts and slopes for first 5 subjects:\\n")
+re <- random.effects(fm_full_nlme)
+print(head(re, 5))
+```
+
+```{r}
+# Plot subject-specific trajectories vs. population average
+plot(fm_full_nlme, depth = 2)
+```
+
+## 7. Fixed Effects Interpretation
+
+From the model summary, the fixed effects represent:
+
+| Effect | Interpretation |
+|--------|---------------|
+| `(Intercept)` | Baseline distance at age 0 for Males |
+| `age` | Change in distance per year for Males |
+| `SexFemale` | Difference in baseline distance for Females vs. Males |
+| `age:SexFemale` | Difference in age slope for Females vs. Males |
+
+```{r}
+# Calculate predicted values and confidence intervals
+Orthodont$predicted <- predict(fm_full_nlme, level = 0)  # Population-level predictions
+Orthodont$fitted <- predict(fm_full_nlme, level = 1)     # Subject-specific predictions
+
+cat("\\nFixed effects with confidence intervals:\\n")
+confint(fm_full_nlme)
+```
+
+## 8. Key Model Components Explained
+
+### Fixed Effects (`distance ~ age * Sex`)
+- **age**: Continuous predictor (years)
+- **Sex**: Binary predictor (Male/Female)
+- **age * Sex**: Interaction allowing different age slopes by sex
+
+### Random Effects (`random = pdSymm(Subject ~ age)`)
+- `pdSymm`: Specifies an unstructured (symmetric positive-definite) covariance matrix
+- This allows the random intercept and slope to be **correlated**
+- Alternative: `pdDiag()` would force them to be independent
+
+### Estimation Method
+- **REML**: Restricted Maximum Likelihood (preferred for final model)
+- **ML**: Maximum Likelihood (needed for likelihood ratio tests between models)
+
+## 9. Model Assessment
+
+```{r}
+# Check model assumptions
+cat("Residual standard deviation:", fm_full_nlme$sigma, "\\n")
+cat("Log-likelihood:", logLik(fm_full_nlme), "\\n")
+
+# ICC (Intra-class Correlation Coefficient) approximation
+var_components <- VarCorr(fm_full_nlme)
+icc <- var_components / (var_components + var_components + fm_full_nlme$sigma^2)[1][2]
+cat("\\nApproximate ICC:", round(icc, 3), "\\n")
+```
+
+## 10. Conclusion
+
+This full mixed model:
+- Accounts for **within-subject correlation** via random intercepts and slopes
+- Allows **sex-specific growth trajectories** via the interaction term
+- Estimates **correlation between intercept and slope** (children starting higher may grow faster/slower)
+- Provides both **population-average** and **subject-specific** predictions
+
+The model is appropriate for longitudinal data with repeated measurements per subject.
+
+---
+
+## Appendix: Complete R Code
+
+```{r}
+# Complete reproducible code block
+library(nlme)
+library(lme4)
+
+data(Orthodont)
+
+# Full model
+fm_full <- lme(
+  distance ~ age * Sex,
+  random = pdSymm(Subject ~ age),
+  data = Orthodont,
+  method = "REML"
+)
+
+# Summary
+summary(fm_full)
+
+# Predictions
+predict(fm_full, level = 0)  # Fixed effects only
+predict(fm_full, level = 1)  # With random effects
+```

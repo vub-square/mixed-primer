@@ -141,6 +141,7 @@ Added Value
 {{< include ws-mixed-5-slope.qmd >}}
 {{< include ws-mixed-6-higher.qmd >}}
 {{< include ws-mixed-7-longitudinal.qmd >}}
+{{< include ws-mixed-8-effect.qmd >}}
 {{< include ws-mixed-9-finalize.qmd >}}
 
 <!--

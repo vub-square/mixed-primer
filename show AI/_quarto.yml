@@ -1,0 +1,61 @@
+
+knitr:
+  opts_chunk: 
+    comment: "|"
+    fig.align: center
+    fig.height: 4
+    fig.width: 4
+    collapse: true
+    out.extra: ""
+    tidy: TRUE
+
+format:
+  html:
+    theme: [cosmo, _xtra/square.scss]  # Works for plain html
+    embed-resources: true
+    smooth-scroll: true
+    fontcolor: black
+    toc: true
+    toc-location: right
+    toc-title: --------
+    toc-depth: 3
+    grid:
+      margin-width: 200px
+      gutter-width: 1.5rem
+
+  typst:
+    template-partials:
+      - _xtra/typst-template.typ
+      - _xtra/typst-show.typ
+
+  pdf:
+    include-in-header: 
+      text: |
+        \usepackage{booktabs}
+        \usepackage{makecell}
+        \usepackage{float}
+        \renewcommand{\contentsname}{}
+        \usepackage{titling}
+        \definecolor{vub_blue}{HTML}{003399}
+        \pretitle{
+        \begin{center}
+        \LARGE
+        \begin{figure}[!h]
+        \begin{minipage}{4cm}
+        \includegraphics[width=4cm,height=1cm,left]{_xtra/_hdr_logo.png}\\[\bigskipamount]
+        \end{minipage}
+        \end{figure}
+        }
+        \posttitle{\end{center}}
+        \usepackage[export]{adjustbox}
+        \usepackage{graphicx}
+        \usepackage{fancyhdr}
+        \usepackage{xcolor}
+        \pagestyle{fancy}
+        \setlength\headheight{46.3pt}
+        \fancyhead[L]{\includegraphics[height=.7cm]{_xtra/_hdr_logo.png}}
+        \fancyfoot[L]{\textcolor{vub_blue}{}}
+        \fancyfoot[R]{\textcolor{vub_blue}{square.research.vub.be}}
+
+
+format-links: false

@@ -1,4 +1,7 @@
-### Effect size for a fixed effect in a mixed model
+# Effect sizes in mixed models
+
+
+## Effect size for fixed effects (random effects and residual variance) {data-toc-title="Fixed"}
 
 The effect size of a single fixed effect is typically a local effect size similar to Cohen's $f^2$, obtained through model comparison (full model vs. reduced model), while keeping the random-effects structure the same.
 
@@ -29,7 +32,7 @@ Effect sizes for mixed models are still debated:
 
 - **Context-specific interpretation**, interpretation level specific.
 
-### Effect size for variance estimates (random effects and residual variance)
+## Effect size for variance estimates (random effects and residual variance) {data-toc-title="Variance"}
 
 The effect size for variance parameters is typically expressed as **proportions of variance** or **standardized differences**, rather than Cohen's $f^2$.
 
